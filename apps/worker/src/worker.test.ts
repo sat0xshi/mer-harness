@@ -71,6 +71,74 @@ afterAll(async () => {
   await mf?.dispose();
 });
 describe("local D1 API", () => {
+  it("reuses the client id without replacing an existing item", async () => {
+    const itemId = crypto.randomUUID();
+    const first = await request("/items", "POST", { id: itemId, category: "phone" });
+    const original = (await first.json()) as Item;
+    const second = await request("/items", "POST", { id: itemId, category: "other" });
+    expect(second.status).toBe(200);
+    expect(await second.json()).toEqual(original);
+    expect(
+      await db.prepare("SELECT count(*) AS n FROM items WHERE id=?").bind(itemId).first(),
+    ).toEqual({ n: 1 });
+  });
+  it("photo activity updates ordering without invalidating the edit version", async () => {
+    const itemId = crypto.randomUUID(),
+      photoId = crypto.randomUUID();
+    const created = (await (
+      await request("/items", "POST", {
+        id: itemId,
+        category: "phone",
+      })
+    ).json()) as Item;
+    const read = async () => {
+      const state = (await (await request("/state")).json()) as { items: Item[] };
+      return state.items.find((item) => item.id === itemId) as Item;
+    };
+    await db.prepare("UPDATE items SET updated_at=1 WHERE id=?").bind(itemId).run();
+    expect((await request(`/items/${itemId}/photos/${photoId}`, "POST", image)).status).toBe(200);
+    expect((await read()).updated_at).toBeGreaterThan(1);
+    expect((await read()).version).toBe(created.version);
+    await db.prepare("UPDATE items SET updated_at=2 WHERE id=?").bind(itemId).run();
+    expect((await request(`/items/${itemId}/photos/${photoId}`, "DELETE")).status).toBe(200);
+    expect((await read()).updated_at).toBeGreaterThan(2);
+    expect((await read()).version).toBe(created.version);
+    expect((await read()).photos).toEqual([]);
+    // A repeated delete is a no-op, not new activity.
+    await db.prepare("UPDATE items SET updated_at=3 WHERE id=?").bind(itemId).run();
+    await request(`/items/${itemId}/photos/${photoId}`, "DELETE");
+    expect((await read()).updated_at).toBe(3);
+    await db.prepare("DELETE FROM events WHERE item_id=?").bind(itemId).run();
+  });
+  it("autosaves with fresh operation keys award each answer once and never finish text", async () => {
+    const itemId = crypto.randomUUID();
+    await request("/items", "POST", { id: itemId, category: "phone" });
+    for (let version = 0; version < 3; version++) {
+      expect(
+        (
+          await request(`/items/${itemId}`, "PUT", {
+            version,
+            category: "phone",
+            answers: { model: `Pixel ${version}` },
+            price: 0,
+            shipping: 750,
+            comps: [],
+            finish: false,
+          })
+        ).status,
+      ).toBe(200);
+    }
+    expect(
+      await db
+        .prepare(
+          "SELECT type,count(*) AS n,sum(xp) AS xp FROM events WHERE item_id=? GROUP BY type",
+        )
+        .bind(itemId)
+        .all(),
+    ).toMatchObject({ results: [{ type: "answer", n: 1, xp: 5 }] });
+    // Keep the existing suite's global XP assertions isolated.
+    await db.prepare("DELETE FROM events WHERE item_id=?").bind(itemId).run();
+  });
   it("persists the default/explicit platform and rejects unregistered platforms", async () => {
     const explicit = await request("/items", "POST", {
       id: crypto.randomUUID(),

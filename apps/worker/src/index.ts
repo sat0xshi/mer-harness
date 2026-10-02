@@ -407,6 +407,7 @@ app.post("/api/items/:id/photos/:photoId", async (c) => {
           "INSERT INTO photos(id,item_id,data,position,created_at) SELECT ?,?,?,coalesce(max(position)+1,0),? FROM photos WHERE item_id=?",
         )
         .bind(photoId, id, bytes.buffer, now, id),
+      db.prepare("UPDATE items SET updated_at=? WHERE id=?").bind(now, id),
       db
         .prepare(
           "INSERT OR IGNORE INTO events(id,key,type,item_id,xp,meta_json,day,created_at) SELECT ?,?,'photo',?,CASE WHEN (SELECT count(*) FROM events WHERE item_id=? AND type='photo')<6 THEN 3 ELSE 0 END,'{}',?,?",
@@ -433,9 +434,17 @@ app.get("/api/photos/:id", async (c) => {
   });
 });
 app.delete("/api/items/:id/photos/:photoId", async (c) => {
-  await c.env.DB.prepare("DELETE FROM photos WHERE id=? AND item_id=?")
-    .bind(c.req.param("photoId"), c.req.param("id"))
-    .run();
+  const db = c.env.DB,
+    id = c.req.param("id"),
+    photoId = c.req.param("photoId");
+  await db.batch([
+    db
+      .prepare(
+        "UPDATE items SET updated_at=? WHERE id=? AND EXISTS(SELECT 1 FROM photos WHERE id=? AND item_id=?)",
+      )
+      .bind(Date.now(), id, photoId, id),
+    db.prepare("DELETE FROM photos WHERE id=? AND item_id=?").bind(photoId, id),
+  ]);
   return c.json({ ok: true });
 });
 app.post("/api/rest", async (c) => {
