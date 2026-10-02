@@ -531,3 +531,352 @@ describe("Access security", () => {
     fetchMock.mockRestore();
   });
 });
+
+describe("Gemini listing drafts", () => {
+  const key = "test-gemini-key-never-log";
+  const modelDraft = {
+    category: "smartphone",
+    brand: " Google ",
+    model: 9,
+    color: ["黒"],
+    flaws: "",
+    title: "📱".repeat(45),
+    description: "写".repeat(1050),
+  };
+  const envelope = (text: string, finishReason = "STOP") => ({
+    candidates: [
+      { finishReason, content: { parts: [{ thought: true, text: "ignore this" }, { text }] } },
+    ],
+  });
+  const call = (itemId: string, overrides: Record<string, unknown> = {}) =>
+    app.request(
+      "http://localhost/api/ai/listing",
+      {
+        method: "POST",
+        headers: { Origin: "http://localhost", "Content-Type": "application/json" },
+        body: JSON.stringify({ id: itemId }),
+      },
+      { ...env, DB: db, GEMINI_API_KEY: key, AI_DAILY_LIMIT: "30", ...overrides } as never,
+    );
+  async function create(answers: Record<string, string> = { model: "Camera" }) {
+    const itemId = crypto.randomUUID();
+    const created = await request("/items", "POST", { id: itemId, category: "gadget" });
+    const item = (await created.json()) as Item;
+    const saved = await request(`/items/${itemId}`, "PUT", {
+      version: item.version,
+      category: item.category,
+      answers,
+      price: item.price,
+      shipping: item.shipping,
+      comps: item.comps,
+    });
+    await db.prepare("DELETE FROM events WHERE item_id=?").bind(itemId).run();
+    return (await saved.json()) as Item;
+  }
+  async function isolated(
+    run: (fetch: ReturnType<typeof vi.fn>, log: ReturnType<typeof vi.spyOn>) => Promise<void>,
+  ) {
+    await db.prepare("DELETE FROM ai_usage").run();
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await run(fetch, log);
+    } finally {
+      vi.unstubAllGlobals();
+      log.mockRestore();
+      warn.mockRestore();
+      await db.prepare("DELETE FROM ai_usage").run();
+    }
+  }
+  it("sends the default model, header credentials, ordered first three photos and reserves one call", async () => {
+    const item = await create();
+    const photos = [0, 1, 2, 3].map((position) => {
+      const bytes = new Uint8Array(image);
+      // Distinct square SOF dimensions let the request prove position ordering.
+      bytes[8] = position + 1;
+      bytes[10] = position + 1;
+      return bytes;
+    });
+    for (const position of [3, 1, 2, 0]) {
+      await db
+        .prepare("INSERT INTO photos(id,item_id,position,data,created_at) VALUES(?,?,?,?,?)")
+        .bind(crypto.randomUUID(), item.id, position, photos[position].buffer, position)
+        .run();
+    }
+    await isolated(async (fetch) => {
+      fetch.mockResolvedValue(Response.json(envelope(JSON.stringify(modelDraft))));
+      const response = await call(item.id);
+      expect(response.status).toBe(200);
+      const result = (await response.json()) as {
+        source: string;
+        suggestion: typeof modelDraft;
+        stripped: string[];
+      };
+      expect(result).toMatchObject({
+        source: "ai",
+        suggestion: { category: "phone", brand: "Google", model: "9", color: "黒" },
+        stripped: [],
+      });
+      expect([...result.suggestion.title]).toHaveLength(40);
+      expect([...result.suggestion.description]).toHaveLength(1000);
+      expect(fetch).toHaveBeenCalledOnce();
+      const [url, init] = fetch.mock.calls[0];
+      expect(url).toBe(
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
+      );
+      expect(url).not.toContain(key);
+      expect(init.headers).toEqual({ "x-goog-api-key": key, "Content-Type": "application/json" });
+      expect(init.method).toBe("POST");
+      expect(init.signal).toBeInstanceOf(AbortSignal);
+      const body = JSON.parse(init.body);
+      expect(
+        body.contents[0].parts
+          .filter((p: { inline_data?: unknown }) => p.inline_data)
+          .map((p: { inline_data: { data: string } }) => p.inline_data.data),
+      ).toEqual(photos.slice(0, 3).map((bytes) => Buffer.from(bytes).toString("base64")));
+      expect(init.body).not.toContain(key);
+      expect(await db.prepare("SELECT calls FROM ai_usage").first()).toEqual({ calls: 1 });
+      expect(
+        ((await (await request("/state")).json()) as { items: Item[] }).items.find(
+          (i) => i.id === item.id,
+        ),
+      ).toMatchObject({ title: item.title, description: item.description, version: item.version });
+    });
+  });
+  it("trims the model override, skips invalid photos among the first three, and exposes enablement", async () => {
+    const item = await create();
+    const invalid = new Uint8Array(image);
+    invalid[8] = 2; // Not square.
+    const corrupt = new Uint8Array([1, 2, 3]);
+    for (const [position, bytes] of [image, invalid, corrupt, image].entries()) {
+      await db
+        .prepare("INSERT INTO photos(id,item_id,position,data,created_at) VALUES(?,?,?,?,?)")
+        .bind(crypto.randomUUID(), item.id, position, bytes.buffer, position)
+        .run();
+    }
+    await isolated(async (fetch) => {
+      fetch.mockResolvedValue(Response.json(envelope(JSON.stringify(modelDraft))));
+      expect((await call(item.id, { GEMINI_MODEL: " custom-flash " })).status).toBe(200);
+      expect(fetch.mock.calls[0][0]).toContain("models/custom-flash:generateContent");
+      expect(JSON.parse(fetch.mock.calls[0][1].body).contents[0].parts).toHaveLength(2);
+      for (const [apiKey, enabled] of [
+        [key, true],
+        ["  ", false],
+        [undefined, false],
+      ]) {
+        const state = await app.request("http://localhost/api/state", {}, {
+          ...env,
+          DB: db,
+          GEMINI_API_KEY: apiKey,
+        } as never);
+        expect(await state.json()).toMatchObject({ listingAiEnabled: enabled });
+      }
+    });
+  });
+  it.each([undefined, "", "  "])(
+    "returns template without fetch or quota for key %j",
+    async (apiKey) => {
+      const item = await create();
+      await isolated(async (fetch) => {
+        const response = await call(item.id, { GEMINI_API_KEY: apiKey });
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual({
+          source: "template",
+          reason: "no-key",
+          suggestion: {
+            category: item.category,
+            brand: "",
+            model: "",
+            color: "",
+            flaws: "",
+            title: item.title,
+            description: item.description,
+          },
+        });
+        expect(fetch).not.toHaveBeenCalled();
+        expect(await db.prepare("SELECT calls FROM ai_usage").first()).toBeNull();
+      });
+    },
+  );
+  it("returns a template on HTTP errors and redacts log samples before truncating", async () => {
+    const item = await create();
+    await isolated(async (fetch, log) => {
+      const encoded = Buffer.from(image).toString("base64");
+      fetch.mockResolvedValue(
+        new Response(`${key} ${encoded} ${"a".repeat(400)}`, { status: 500 }),
+      );
+      const response = await call(item.id);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ source: "template", reason: "ai-error" });
+      expect(log).toHaveBeenCalledWith(
+        "gemini failure",
+        expect.objectContaining({ stage: "http", status: 500 }),
+      );
+      const logged = JSON.stringify(log.mock.calls);
+      expect(logged).not.toContain(key);
+      expect(logged).not.toContain(encoded);
+      expect(
+        String((log.mock.calls[0][1] as { sample: string }).sample).length,
+      ).toBeLessThanOrEqual(300);
+      expect(await db.prepare("SELECT calls FROM ai_usage").first()).toEqual({ calls: 1 });
+      expect(fetch).toHaveBeenCalledOnce();
+    });
+  });
+  it.each([
+    ["garbage", "json"],
+    [JSON.stringify({ title: "傷なし", description: "動作確認済み。付属品完備。" }), "validation"],
+  ])("falls back on invalid model JSON/text %s", async (text, stage) => {
+    const item = await create();
+    await isolated(async (fetch, log) => {
+      fetch.mockResolvedValue(Response.json(envelope(text)));
+      const response = await call(item.id);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ source: "template", reason: "validation" });
+      expect(log).toHaveBeenCalledWith("gemini failure", expect.objectContaining({ stage }));
+    });
+  });
+  it.each(["MAX_TOKENS", "SAFETY"])("falls back for incomplete finish %s", async (reason) => {
+    const item = await create();
+    await isolated(async (fetch, log) => {
+      fetch.mockResolvedValue(Response.json(envelope(JSON.stringify(modelDraft), reason)));
+      expect(await (await call(item.id)).json()).toMatchObject({
+        source: "template",
+        reason: "ai-error",
+      });
+      expect(log).toHaveBeenCalledWith(
+        "gemini failure",
+        expect.objectContaining({ stage: "shape", finishReason: reason }),
+      );
+    });
+  });
+  it("counts a timeout without retry and handles blocked or malformed envelopes", async () => {
+    const item = await create();
+    await isolated(async (fetch, log) => {
+      fetch.mockRejectedValueOnce(new Error(`Timeout ${key}`));
+      expect(await (await call(item.id)).json()).toMatchObject({
+        source: "template",
+        reason: "ai-error",
+      });
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(JSON.stringify(log.mock.calls)).not.toContain(key);
+      expect(await db.prepare("SELECT calls FROM ai_usage").first()).toEqual({ calls: 1 });
+      for (const response of [{}, { promptFeedback: { blockReason: "SAFETY" } }]) {
+        fetch.mockResolvedValueOnce(Response.json(response));
+        expect(await (await call(item.id)).json()).toMatchObject({
+          source: "template",
+          reason: "ai-error",
+        });
+        expect(log).toHaveBeenLastCalledWith(
+          "gemini failure",
+          expect.objectContaining({ stage: "shape" }),
+        );
+      }
+      fetch.mockResolvedValueOnce(new Response("not JSON"));
+      expect(await (await call(item.id)).json()).toMatchObject({
+        source: "template",
+        reason: "validation",
+      });
+    });
+  });
+  it("strips unsupported claims and keeps answer-supported claims", async () => {
+    const plain = await create();
+    const supported = await create({
+      flaws: "目立つ傷なし",
+      operation: "動作確認済み",
+      accessories: "付属品すべてあり",
+    });
+    await isolated(async (fetch) => {
+      const description = "写真に写っている黒い商品です。傷なし。動作確認済み。付属品完備。";
+      fetch.mockImplementation(async () =>
+        Response.json(envelope(JSON.stringify({ ...modelDraft, title: "商品", description }))),
+      );
+      expect(await (await call(plain.id)).json()).toMatchObject({
+        source: "ai",
+        stripped: ["no-damage", "works-confirmed", "accessories-complete"],
+        suggestion: { description: "写真に写っている黒い商品です。" },
+      });
+      expect(await (await call(supported.id)).json()).toMatchObject({
+        source: "ai",
+        stripped: [],
+        suggestion: { description },
+      });
+      expect(console.warn).toHaveBeenCalledWith("gemini claims stripped", {
+        stripped: ["no-damage", "works-confirmed", "accessories-complete"],
+      });
+    });
+  });
+  it("shares the quota with Gemma and refuses the second call without fetching", async () => {
+    const item = await create();
+    await isolated(async (fetch) => {
+      fetch.mockResolvedValue(Response.json(envelope(JSON.stringify(modelDraft))));
+      const options = { AI_DAILY_LIMIT: "1" };
+      expect((await call(item.id, options)).status).toBe(200);
+      const response = await call(item.id, options);
+      expect(response.status).toBe(429);
+      expect(await response.json()).toEqual({ error: "apiError20" });
+      expect(fetch).toHaveBeenCalledOnce();
+      const run = vi.fn();
+      const gemma = await app.request(
+        "http://localhost/api/ai/photo",
+        { method: "POST", headers: { Origin: "http://localhost" }, body: image.buffer },
+        { ...env, DB: db, AI_ENABLED: "1", AI_DAILY_LIMIT: "1", AI: { run } } as never,
+      );
+      expect(gemma.status).toBe(429);
+      expect(run).not.toHaveBeenCalled();
+    });
+  });
+  it("rejects missing/invalid ids before spending quota", async () => {
+    await isolated(async (fetch) => {
+      const missing = await call(crypto.randomUUID());
+      expect(missing.status).toBe(404);
+      expect(await missing.json()).toEqual({ error: "apiError8" });
+      expect((await call("invalid")).status).toBe(400);
+      expect(fetch).not.toHaveBeenCalled();
+      expect(await db.prepare("SELECT calls FROM ai_usage").first()).toBeNull();
+    });
+  });
+  it("persists explicit text, checks stored text for finish, and builds omitted fields from answers", async () => {
+    let item = await create();
+    const put = async (input: Record<string, unknown>) =>
+      request(`/items/${item.id}`, "PUT", {
+        version: item.version,
+        category: item.category,
+        answers: item.answers,
+        price: item.price,
+        shipping: item.shipping,
+        comps: item.comps,
+        ...input,
+      });
+    const response = await put({
+      title: "📷".repeat(40),
+      description: "Custom description",
+      finish: true,
+    });
+    expect(response.status).toBe(200);
+    item = (await response.json()) as Item;
+    expect(item.title).toBe("📷".repeat(40));
+    expect(item.description).toBe("Custom description");
+    expect(
+      await db
+        .prepare("SELECT type FROM events WHERE item_id=? AND type='text'")
+        .bind(item.id)
+        .first(),
+    ).toEqual({ type: "text" });
+    await db.prepare("DELETE FROM events WHERE item_id=?").bind(item.id).run();
+    item = (await (await put({ title: "", description: "", finish: true })).json()) as Item;
+    expect(
+      await db
+        .prepare("SELECT type FROM events WHERE item_id=? AND type='text'")
+        .bind(item.id)
+        .first(),
+    ).toBeNull();
+    expect((await put({ title: "a".repeat(41) })).status).toBe(400);
+    expect((await put({ description: "a".repeat(1001) })).status).toBe(400);
+    item = (await (await put({ answers: { model: "New model" } })).json()) as Item;
+    expect(item.title).toBe("New model");
+    expect(item.description).toContain("New model");
+    await db.prepare("DELETE FROM events WHERE item_id=?").bind(item.id).run();
+  });
+});

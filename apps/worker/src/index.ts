@@ -14,6 +14,7 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
 import { extractJson, extractText, normalizePhoto, normalizePrices } from "./ai";
+import { reserveAiCall } from "./aiQuota";
 import {
   type AuthEnv,
   authConfigured,
@@ -25,7 +26,13 @@ import {
   verifyGoogle,
 } from "./auth";
 import { decodeItem, eventStatement, getEvents, getItem, type ItemRow } from "./data";
-import { jstDay } from "./day";
+import {
+  buildGeminiRequest,
+  DEFAULT_GEMINI_MODEL,
+  extractGeminiText,
+  redactGemini,
+  validateListingDraft,
+} from "./gemini";
 import {
   categorySchema,
   itemInput,
@@ -38,6 +45,8 @@ import {
 interface Env extends AuthEnv {
   DB: D1Database;
   ASSETS: Fetcher;
+  GEMINI_API_KEY?: string;
+  GEMINI_MODEL?: string;
   AI_ENABLED: string;
   AI_DAILY_LIMIT: string;
   AI?: { run: (model: string, input: unknown) => Promise<unknown> };
@@ -146,6 +155,7 @@ app.get("/api/state", async (c) => {
     events,
     game: gameSummary(events, await day(c.env.DB, now), now),
     settings: await settings(c.env.DB),
+    listingAiEnabled: !!c.env.GEMINI_API_KEY?.trim(),
     aiEnabled: c.env.AI_ENABLED === "1" && !!c.env.AI,
   });
 });
@@ -193,6 +203,8 @@ app.put("/api/items/:id", async (c) => {
     return c.json(old);
   if (old.version !== input.version) return c.json({ error: "apiError9" }, 409);
   const listing = buildListing(input.category, input.answers, old.platform),
+    title = input.title ?? listing.title,
+    description = input.description ?? listing.description,
     now = Date.now(),
     today = await day(db, now);
   const statements = [
@@ -208,8 +220,8 @@ app.put("/api/items/:id", async (c) => {
       .bind(
         input.category,
         JSON.stringify(input.answers),
-        listing.title,
-        listing.description,
+        title,
+        description,
         input.price,
         input.shipping,
         JSON.stringify(input.comps),
@@ -229,7 +241,7 @@ app.put("/api/items/:id", async (c) => {
     );
   for (const q of questions[input.category])
     if (input.answers[q.key]?.trim()) add("answer", `answer:${q.key}`, 5);
-  if (input.finish && listing.title && listing.description)
+  if (input.finish && title.trim() && description.trim())
     add("text", "text", listing.complete ? 20 : 10, { complete: listing.complete });
   if (input.price >= getPlatform(old.platform).limits.minPrice) add("price", "price", 10);
   const result = await db.batch(statements);
@@ -463,6 +475,103 @@ app.post("/api/rest", async (c) => {
   }).run();
   return c.json({ ok: true });
 });
+app.post("/api/ai/listing", async (c) => {
+  const { id } = z.object({ id: z.string().uuid() }).parse(await c.req.json());
+  const item = await getItem(c.env.DB, id);
+  if (!item) return c.json({ error: "apiError8" }, 404);
+  const fallback = (reason: "no-key" | "ai-error" | "validation") => {
+    const { title, description } = buildListing(item.category, item.answers, item.platform);
+    return c.json({
+      source: "template",
+      suggestion: {
+        category: item.category,
+        brand: "",
+        model: "",
+        color: "",
+        flaws: "",
+        title,
+        description,
+      },
+      reason,
+    });
+  };
+  const key = c.env.GEMINI_API_KEY?.trim() || "";
+  if (!key) {
+    console.warn("gemini failure", { stage: "no-key", error: "Missing API key", sample: "" });
+    return fallback("no-key");
+  }
+  const rows = await c.env.DB.prepare(
+    "SELECT data FROM photos WHERE item_id=? ORDER BY position,created_at LIMIT 3",
+  )
+    .bind(id)
+    .all<{ data: ArrayBuffer | number[] }>();
+  const photos = rows.results
+    .map(({ data }) => new Uint8Array(data))
+    .filter((bytes) => {
+      const size = jpegDimensions(bytes);
+      return (
+        bytes.length <= 307200 &&
+        size &&
+        size.width > 0 &&
+        size.width === size.height &&
+        size.width <= 1080
+      );
+    });
+  if (!(await reserveAiCall(c.env.DB, c.env.AI_DAILY_LIMIT)))
+    return c.json({ error: "apiError20" }, 429);
+  let stage: "http" | "shape" | "json" | "validation" = "http";
+  let sample = "";
+  let status: number | undefined;
+  let finishReason: string | undefined;
+  try {
+    const model = c.env.GEMINI_MODEL?.trim() || DEFAULT_GEMINI_MODEL;
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+      {
+        method: "POST",
+        headers: { "x-goog-api-key": key, "Content-Type": "application/json" },
+        body: JSON.stringify(buildGeminiRequest(item, photos)),
+        signal: AbortSignal.timeout(25000),
+      },
+    );
+    status = response.status;
+    sample = await response.text();
+    if (!response.ok) throw Error("Gemini HTTP failure");
+    stage = "json";
+    const responseBody: unknown = JSON.parse(sample);
+    stage = "shape";
+    const extracted = extractGeminiText(responseBody);
+    sample = extracted.text;
+    finishReason = extracted.finishReason;
+    if (!extracted.ok) throw Error("Blocked, incomplete, or missing model output");
+    stage = "json";
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(sample);
+    } catch {
+      parsed = extractJson(sample);
+    }
+    stage = "validation";
+    const result = validateListingDraft(parsed, item);
+    if (!result.ok) throw Error(result.reason);
+    if (result.stripped.length)
+      console.warn("gemini claims stripped", { stripped: result.stripped });
+    return c.json({ source: "ai", suggestion: result.draft, stripped: result.stripped });
+  } catch (error) {
+    console.error("gemini failure", {
+      stage,
+      error: redactGemini(error instanceof Error ? error.message : String(error), key).slice(
+        0,
+        300,
+      ),
+      status,
+      finishReason:
+        finishReason === undefined ? undefined : redactGemini(finishReason, key).slice(0, 300),
+      sample: redactGemini(sample, key).slice(0, 300),
+    });
+    return fallback(stage === "json" || stage === "validation" ? "validation" : "ai-error");
+  }
+});
 app.post("/api/ai/:kind", async (c) => {
   if (!["photo", "prices"].includes(c.req.param("kind")))
     return c.json({ error: "apiError17" }, 404);
@@ -471,13 +580,7 @@ app.post("/api/ai/:kind", async (c) => {
     size = jpegDimensions(bytes);
   if (bytes.length > 307200 || !size || size.width > 1080 || size.height > 1080)
     return c.json({ error: "apiError19" }, 400);
-  const today = jstDay(Date.now()),
-    limit = Math.max(0, Math.min(100, Number(c.env.AI_DAILY_LIMIT) || 0));
-  const reservation = await c.env.DB.prepare(
-    "INSERT INTO ai_usage(day,calls) SELECT ?,1 WHERE ?>0 ON CONFLICT(day) DO UPDATE SET calls=calls+1 WHERE calls<? RETURNING calls",
-  )
-    .bind(today, limit, limit)
-    .first();
+  const reservation = await reserveAiCall(c.env.DB, c.env.AI_DAILY_LIMIT);
   if (!reservation) return c.json({ error: "apiError20" }, 429);
   const kind = c.req.param("kind");
   const prompt =

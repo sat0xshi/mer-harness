@@ -1,4 +1,4 @@
-import { defaultPlatform, platforms } from "@mer/core";
+import { charCount, defaultPlatform, platforms } from "@mer/core";
 import { z } from "zod";
 export const platformSchema = z
   .string()
@@ -19,6 +19,14 @@ export const itemInput = z.object({
       }),
     )
     .max(100),
+  title: z
+    .string()
+    .refine((value) => charCount(value) <= defaultPlatform.limits.title)
+    .optional(),
+  description: z
+    .string()
+    .refine((value) => charCount(value) <= defaultPlatform.limits.description)
+    .optional(),
   finish: z.boolean().optional(),
 });
 export const statusInput = z.object({
