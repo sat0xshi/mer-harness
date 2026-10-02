@@ -1,4 +1,6 @@
-import type { Item } from "@mer/core";
+import { buildListing, type Item } from "@mer/core";
+
+import { isCustomText, syncTemplateText } from "./listingText";
 
 const fields = ["category", "price", "shipping", "comps"] as const;
 const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
@@ -8,6 +10,7 @@ export const editInput = (item: Item) => ({
   price: item.price,
   shipping: item.shipping,
   comps: item.comps,
+  ...(isCustomText(item) ? { title: item.title, description: item.description } : {}),
 });
 
 // Three-way merge: only locally changed fields override the server. Answers
@@ -22,6 +25,14 @@ export function mergeEdits(base: Item, local: Item, server: Item): Item {
       if (local.answers[key] === undefined) delete merged.answers[key];
       else merged.answers[key] = local.answers[key];
     }
+  }
+  for (const field of ["title", "description"] as const) {
+    if ((isCustomText(base) || isCustomText(local)) && base[field] !== local[field])
+      merged[field] = local[field];
+  }
+  if (!isCustomText(local) && !isCustomText(server)) {
+    const { title, description } = buildListing(merged.category, merged.answers, merged.platform);
+    Object.assign(merged, { title, description });
   }
   return merged;
 }
@@ -81,8 +92,9 @@ export class AutosaveQueue {
     this.dependencies.persist?.(this.dirty ? { base: this.base, local: this.local } : null);
     for (const listener of this.listeners) listener();
   }
-  edit(update: Item | ((item: Item) => Item)) {
-    this.local = typeof update === "function" ? update(this.local) : update;
+  edit(update: Item | ((item: Item) => Item), options: { preserveText?: boolean } = {}) {
+    const next = typeof update === "function" ? update(this.local) : update;
+    this.local = options.preserveText ? next : syncTemplateText(this.local, next);
     this.publish();
     this.schedule();
   }

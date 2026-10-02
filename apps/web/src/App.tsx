@@ -191,6 +191,7 @@ export default function App() {
             key={editing.id}
             initial={editing}
             aiEnabled={state.aiEnabled}
+            listingAiEnabled={state.listingAiEnabled}
             onRefresh={refresh}
             onExit={() => {
               draftStorage.removeItem(activeDraftKey);

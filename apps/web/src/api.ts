@@ -32,6 +32,7 @@ export interface State {
   game: ReturnType<typeof gameSummary>;
   settings: Settings | null;
   aiEnabled: boolean;
+  listingAiEnabled: boolean;
 }
 export class ApiError extends Error {
   constructor(

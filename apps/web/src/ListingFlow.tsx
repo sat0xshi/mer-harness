@@ -1,47 +1,60 @@
 import {
   buildListing,
   type Category,
+  charCount,
   formatCurrency,
   getPlatform,
   type Item,
   netProceeds,
   prices,
 } from "@mer/core";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { CropEditor } from "./CropEditor";
 import { celebrate } from "./celebrate";
+import { draftStorage } from "./drafts";
 import { flowAutosave, releaseAutosave } from "./flowAutosave";
 import { t } from "./i18n/ja";
 import { categories, platformQuestions } from "./i18n/models";
 import { screenshotJpeg } from "./image";
+import { isCustomText, listingText } from "./listingText";
 import { unlockAudio } from "./sound";
 export const yen = formatCurrency;
 export function ListingFlow({
   initial,
   aiEnabled,
+  listingAiEnabled,
   onRefresh,
   onExit,
   onListed,
 }: {
   initial: Item;
   aiEnabled: boolean;
+  listingAiEnabled: boolean;
   onRefresh: () => Promise<void>;
   onExit: () => void;
   onListed: (item: Item) => Promise<void>;
 }) {
+  const draftKey = `harness:listing-ai:${initial.id}`;
+  const [draftSource, setDraftSource] = useState(
+    () => draftStorage.getItem(draftKey) || "template",
+  );
+  const [draftNotice, setDraftNotice] = useState("");
+  const [draftBusy, setDraftBusy] = useState(false);
+  const draftInFlight = useRef(false);
   const [queue] = useState(() => flowAutosave(initial));
   const [item, setView] = useState(queue.item),
     [saveError, setSaveError] = useState(queue.error),
     [step, setStep] = useState(0),
     [q, setQ] = useState(0),
     [files, setFiles] = useState<File[]>([]),
-    [busy, setBusy] = useState(false),
+    [actionBusy, setBusy] = useState(false),
     [error, setError] = useState(""),
     [compPrice, setCompPrice] = useState(""),
     [compSold, setCompSold] = useState(true),
     [copied, setCopied] = useState<string[]>([]),
     [ai, setAi] = useState<Record<string, unknown> | null>(null);
+  const busy = actionBusy || draftBusy;
   useEffect(() => {
     window.scrollTo(0, 0);
   }, [step]);
@@ -78,12 +91,77 @@ export function ListingFlow({
     photoId = useRef(crypto.randomUUID());
   const platform = getPlatform(item.platform);
   const yen = (n: number) => formatCurrency(n, platform);
-  const listing = buildListing(item.category, item.answers, item.platform),
+  const listing = {
+      ...buildListing(item.category, item.answers, item.platform),
+      ...listingText(item),
+    },
     cards = platformQuestions(item.category, item.platform),
     question = cards[Math.min(q, cards.length - 1)],
     suggestions = prices(item.comps, platform);
+  const generateDraft = useCallback(async () => {
+    if (draftInFlight.current || lock.current) return;
+    draftInFlight.current = true;
+    draftStorage.setItem(draftKey, draftSource);
+    setDraftBusy(true);
+    setDraftNotice("");
+    setError("");
+    try {
+      const saved = await queue.flush();
+      const result = await api<{
+        source: "ai" | "template";
+        suggestion: {
+          category: Category;
+          brand: string;
+          model: string;
+          color: string;
+          flaws: string;
+          title: string;
+          description: string;
+        };
+      }>("/ai/listing", { method: "POST", body: JSON.stringify({ id: saved.id }) });
+      queue.edit(
+        (current) => {
+          const answers = { ...current.answers };
+          const hasAnswers = Object.values(answers).some((value) => value.trim());
+          if (result.source === "ai") {
+            for (const key of ["brand", "model", "color", "flaws"] as const) {
+              if (!answers[key]?.trim()) answers[key] = result.suggestion[key];
+            }
+          }
+          return {
+            ...current,
+            answers,
+            category:
+              result.source === "ai" && !hasAnswers ? result.suggestion.category : current.category,
+            title: result.suggestion.title,
+            description: result.suggestion.description,
+          };
+        },
+        { preserveText: true },
+      );
+      setDraftSource(result.source);
+      draftStorage.setItem(draftKey, result.source);
+      if (result.source === "template") setDraftNotice(t("aiDraftFallback"));
+      setCopied([]);
+    } catch (error) {
+      setError((error as Error).message);
+    } finally {
+      draftInFlight.current = false;
+      setDraftBusy(false);
+    }
+  }, [queue, draftKey, draftSource]);
+  useEffect(() => {
+    if (
+      step === 3 &&
+      !busy &&
+      item.photos.length &&
+      !isCustomText(item) &&
+      !draftStorage.getItem(draftKey)
+    )
+      void generateDraft();
+  }, [step, busy, item, draftKey, generateDraft]);
   async function action(fn: () => Promise<void>) {
-    if (lock.current) return;
+    if (lock.current || draftInFlight.current) return;
     lock.current = true;
     setBusy(true);
     setError("");
@@ -299,7 +377,7 @@ export function ListingFlow({
             {item.photos.length}
             {t("photoCountSuffix")}
           </p>
-          {aiEnabled && item.photos.length > 0 && (
+          {aiEnabled && !listingAiEnabled && item.photos.length > 0 && (
             <button
               className="ai-button"
               disabled={busy}
@@ -631,6 +709,13 @@ export function ListingFlow({
           <div className="eyebrow">READY TO GO</div>
           <h1>{t("copyHeading")}</h1>
           <p className="sub">{platform.listingHint}</p>
+          <div className="section-heading">
+            <small>{t(draftSource === "ai" ? "aiDraftSource" : "templateDraftSource")}</small>
+            <button disabled={busy || draftBusy} onClick={() => void generateDraft()}>
+              {t("aiDraft")}
+            </button>
+          </div>
+          {draftNotice && <p role="status">{draftNotice}</p>}
           {platform.copyFields.map(({ key, label }, i) => {
             const value = key === "price" ? String(item.price) : listing[key];
             return (
@@ -644,7 +729,46 @@ export function ListingFlow({
                     {copied.includes(label) ? t("copyDone") : t("copyStep")}
                   </button>
                 </div>
-                <pre>{value || t("missingInput")}</pre>
+                {key === "price" ? (
+                  <pre>{value || t("missingInput")}</pre>
+                ) : (
+                  <label htmlFor={`listing-${key}`}>
+                    <span className="sub">
+                      {t("listingCharCount", {
+                        count: charCount(value),
+                        limit: platform.limits[key],
+                      })}
+                    </span>
+                    {key === "title" ? (
+                      <input
+                        id={`listing-${key}`}
+                        aria-label={label}
+                        value={value}
+                        maxLength={platform.limits.title}
+                        disabled={draftBusy}
+                        onChange={(e) => {
+                          const title = e.target.value;
+                          setItem((item) => ({ ...item, title }));
+                          setCopied([]);
+                        }}
+                      />
+                    ) : (
+                      <textarea
+                        id={`listing-${key}`}
+                        aria-label={label}
+                        value={value}
+                        maxLength={platform.limits.description}
+                        rows={12}
+                        disabled={draftBusy}
+                        onChange={(e) => {
+                          const description = e.target.value;
+                          setItem((item) => ({ ...item, description }));
+                          setCopied([]);
+                        }}
+                      />
+                    )}
+                  </label>
+                )}
               </section>
             );
           })}
@@ -677,7 +801,11 @@ export function ListingFlow({
           <button
             className="primary wide"
             disabled={
-              busy || !listing.title || !item.photos.length || item.price < platform.limits.minPrice
+              busy ||
+              draftBusy ||
+              !listing.title ||
+              !item.photos.length ||
+              item.price < platform.limits.minPrice
             }
             onClick={() =>
               action(async () => {
