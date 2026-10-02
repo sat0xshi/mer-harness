@@ -1,5 +1,5 @@
 import type { GameEvent, gameSummary, Item } from "@mer/core";
-import { type ja, t } from "./i18n/ja";
+import { apiErrorMessage, type ja, t } from "./i18n/ja";
 export interface Settings {
   sound: boolean;
   soundAsked: boolean;
@@ -47,7 +47,7 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
     throw Error(t("loginRequired"));
   if (response.status === 401) window.dispatchEvent(new Event("auth-expired"));
   const body = await response.json();
-  if (!response.ok) throw Error(t((body as { error?: string }).error || "saveError"));
+  if (!response.ok) throw Error(apiErrorMessage((body as { error?: unknown } | null)?.error));
   return body as T;
 }
 export const json = (body: unknown, method = "POST", key = crypto.randomUUID()): RequestInit => ({

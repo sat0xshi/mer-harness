@@ -22,6 +22,7 @@ export const ja = {
   apiError20: "今日のAI枠を使ったよ。手入力で続けよう",
   apiError21: "AIが読み取れなかったよ。手入力で続けられるよ",
   apiError22: "見つからないAPIだよ",
+  apiErrorUnknown: "うまくいかなかったよ。もう一度試してね",
 
   categoryPhone: "スマホ・タブレット",
   categoryGadget: "ガジェット",
@@ -320,4 +321,11 @@ export function t(key: string, values?: Record<string, unknown>): string;
 export function t(key: string, values: Record<string, unknown> = {}): string {
   const message = ja[key as keyof typeof ja] ?? key;
   return message.replace(/\{(\w+)\}/g, (token, name) => String(values[name] ?? token));
+}
+
+// API responses are untrusted; never echo an unknown code into the UI.
+export function apiErrorMessage(code: unknown): string {
+  if (typeof code === "string" && /^apiError\d+$/.test(code) && Object.hasOwn(ja, code))
+    return ja[code as keyof typeof ja];
+  return ja.apiErrorUnknown;
 }
