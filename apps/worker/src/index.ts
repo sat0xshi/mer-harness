@@ -24,6 +24,7 @@ import {
   verifyGoogle,
 } from "./auth";
 import { decodeItem, eventStatement, getEvents, getItem, type ItemRow } from "./data";
+import { jstDay } from "./day";
 import {
   categorySchema,
   itemInput,
@@ -460,7 +461,7 @@ app.post("/api/ai/:kind", async (c) => {
     size = jpegDimensions(bytes);
   if (bytes.length > 307200 || !size || size.width > 1080 || size.height > 1080)
     return c.json({ error: "apiError19" }, 400);
-  const today = new Date().toISOString().slice(0, 10),
+  const today = jstDay(Date.now()),
     limit = Math.max(0, Math.min(100, Number(c.env.AI_DAILY_LIMIT) || 0));
   const reservation = await c.env.DB.prepare(
     "INSERT INTO ai_usage(day,calls) SELECT ?,1 WHERE ?>0 ON CONFLICT(day) DO UPDATE SET calls=calls+1 WHERE calls<? RETURNING calls",

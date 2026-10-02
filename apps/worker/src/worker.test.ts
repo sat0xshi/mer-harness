@@ -263,9 +263,29 @@ describe("local D1 API", () => {
         { method: "POST", headers: { Origin: "http://localhost" }, body: image },
         aiEnv as never,
       );
-    const results = await Promise.all([call(), call(), call()]);
-    expect(results.map((r) => r.status).sort()).toEqual([200, 200, 429]);
-    expect(run).toHaveBeenCalledTimes(2);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      await db.prepare("DELETE FROM ai_usage").run();
+      vi.setSystemTime(new Date("2026-10-01T14:59:59.999Z"));
+      const results = await Promise.all([call(), call(), call()]);
+      expect(results.map((r) => r.status).sort()).toEqual([200, 200, 429]);
+      expect(run).toHaveBeenCalledTimes(2);
+      expect(await db.prepare("SELECT day, calls FROM ai_usage").all()).toMatchObject({
+        results: [{ day: "2026-10-01", calls: 2 }],
+      });
+
+      vi.setSystemTime(new Date("2026-10-01T15:00:00.000Z"));
+      expect((await call()).status).toBe(200);
+      expect(run).toHaveBeenCalledTimes(3);
+      expect(await db.prepare("SELECT day, calls FROM ai_usage ORDER BY day").all()).toMatchObject({
+        results: [
+          { day: "2026-10-01", calls: 2 },
+          { day: "2026-10-02", calls: 1 },
+        ],
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 describe("Access security", () => {
