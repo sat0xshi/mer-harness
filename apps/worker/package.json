@@ -1,0 +1,5 @@
+{
+  "name": "@mer/worker",
+  "private": true,
+  "type": "module"
+}

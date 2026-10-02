@@ -1,0 +1,1 @@
+ALTER TABLE items ADD COLUMN platform TEXT NOT NULL DEFAULT 'mercari';

@@ -1,0 +1,14 @@
+# Local development only. Copy to .dev.vars (gitignored).
+APP_ENV=development
+DEV_AUTH_BYPASS=1
+AI_ENABLED=0
+AUTH_MODE=google
+GOOGLE_CLIENT_ID=REPLACE_WITH_GOOGLE_CLIENT_ID
+# For Google/Access auth tests, disable DEV_AUTH_BYPASS.
+# Deployed secrets: pnpm exec wrangler secret put NAME --env staging
+OWNER_EMAIL=REPLACE_WITH_OWNER_EMAIL
+# Google sessions require a random secret of at least 32 characters.
+SESSION_SECRET=REPLACE_WITH_SESSION_SECRET
+# Used only with AUTH_MODE=access:
+ACCESS_AUD=REPLACE_WITH_ACCESS_AUD
+ACCESS_TEAM_DOMAIN=REPLACE_WITH_ACCESS_TEAM_DOMAIN

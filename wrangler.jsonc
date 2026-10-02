@@ -1,0 +1,100 @@
+{
+  "name": "mer-harness",
+  "main": "apps/worker/src/index.ts",
+  "compatibility_date": "2026-10-02",
+  "workers_dev": false,
+  "preview_urls": false,
+  "assets": {
+    "directory": "./apps/web/dist",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api", "/api/*"],
+    "not_found_handling": "single-page-application"
+  },
+  "env": {
+    "development": {
+      "name": "mer-harness-dev",
+      "workers_dev": false,
+      "preview_urls": false,
+      "routes": [],
+      "vars": {
+        "APP_ENV": "development",
+        "AI_ENABLED": "0",
+        "AI_DAILY_LIMIT": "30",
+        "ACCESS_AUD": "REPLACE_WITH_ACCESS_AUD",
+        "ACCESS_TEAM_DOMAIN": "REPLACE_WITH_ACCESS_TEAM_DOMAIN",
+        "AUTH_MODE": "access",
+        "GOOGLE_CLIENT_ID": "REPLACE_WITH_GOOGLE_CLIENT_ID"
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "mer-harness-dev",
+          "database_id": "00000000-0000-0000-0000-000000000000",
+          "migrations_dir": "migrations"
+        }
+      ]
+    },
+    "staging": {
+      "name": "mer-harness-stg",
+      "workers_dev": false,
+      "preview_urls": false,
+      "routes": [
+        {
+          "pattern": "mer-harness-stg.sat0xshi.com",
+          "custom_domain": true
+        }
+      ],
+      "vars": {
+        "APP_ENV": "staging",
+        "AI_ENABLED": "1",
+        "AI_DAILY_LIMIT": "30",
+        "ACCESS_AUD": "REPLACE_WITH_ACCESS_AUD",
+        "ACCESS_TEAM_DOMAIN": "REPLACE_WITH_ACCESS_TEAM_DOMAIN",
+        "AUTH_MODE": "google",
+        "GOOGLE_CLIENT_ID": "REPLACE_WITH_GOOGLE_CLIENT_ID"
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "mer-harness-stg",
+          "database_id": "7fe02d97-df73-40d0-be54-a34c6c5f0ade",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "ai": {
+        "binding": "AI"
+      }
+    },
+    "production": {
+      "name": "mer-harness",
+      "workers_dev": false,
+      "preview_urls": false,
+      "routes": [
+        {
+          "pattern": "mer-harness.sat0xshi.com",
+          "custom_domain": true
+        }
+      ],
+      "vars": {
+        "APP_ENV": "production",
+        "AI_ENABLED": "1",
+        "AI_DAILY_LIMIT": "30",
+        "ACCESS_AUD": "REPLACE_WITH_ACCESS_AUD",
+        "ACCESS_TEAM_DOMAIN": "REPLACE_WITH_ACCESS_TEAM_DOMAIN",
+        "AUTH_MODE": "access",
+        "GOOGLE_CLIENT_ID": "REPLACE_WITH_GOOGLE_CLIENT_ID"
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "mer-harness-prod",
+          "database_id": "REPLACE_WITH_PRODUCTION_D1_ID",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "ai": {
+        "binding": "AI"
+      }
+    }
+  }
+}
