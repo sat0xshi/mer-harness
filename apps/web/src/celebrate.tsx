@@ -235,11 +235,14 @@ export function CelebrationHost({ settings, onAsk }: { settings: Settings; onAsk
             onClick={() => skip.current()}
           >
             {active.text}
-            {active.type === "sold" && active.n !== undefined && (
-              <strong className="sales">
-                <AnimatedNumber value={active.n} settings={settings} format={formatCurrency} />
-              </strong>
-            )}
+            {active.type === "sold" &&
+              active.n !== undefined &&
+              Number.isFinite(active.n) &&
+              active.n > 0 && (
+                <strong className="sales">
+                  <AnimatedNumber value={active.n} settings={settings} format={formatCurrency} />
+                </strong>
+              )}
             <small>{t("dismissCelebration")}</small>
           </button>
         )}

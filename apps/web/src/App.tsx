@@ -102,7 +102,7 @@ export default function App() {
       );
       setUndo({ item: result.item, key: result.key });
       if (to === "listed") celebrate("listed", t("celebrateListed"));
-      if (to === "trading") celebrate("sold", t("celebrateSold"), soldPrice || item.price);
+      if (to === "trading") celebrate("sold", t("celebrateSold"), soldPrice);
       if (shipped) celebrate("shipped", t("celebrateShipped"));
       await refresh();
     });
