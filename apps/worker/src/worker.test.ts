@@ -314,6 +314,117 @@ describe("local D1 API", () => {
     expect((await request("/ai/photo", "POST", image)).status).toBe(503);
     expect((await request("/state")).status).toBe(200);
   });
+  it("normalizes AI content parts and logs failures without image data", async () => {
+    const run = vi.fn(
+      async (): Promise<unknown> => ({
+        choices: [
+          {
+            message: {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    category: "Smartphone",
+                    brand: "Google",
+                    model: "Pixel",
+                    color: "黒",
+                    flaws: ["小傷", "擦れ"],
+                  }),
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    );
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const call = (kind = "photo") =>
+      app.request(
+        `http://localhost/api/ai/${kind}`,
+        { method: "POST", headers: { Origin: "http://localhost" }, body: image },
+        { ...env, DB: db, AI_ENABLED: "1", AI_DAILY_LIMIT: "10", AI: { run } } as never,
+      );
+    try {
+      await db.prepare("DELETE FROM ai_usage").run();
+      const success = await call();
+      expect(success.status).toBe(200);
+      expect(await success.json()).toEqual({
+        suggestion: {
+          category: "phone",
+          brand: "Google",
+          model: "Pixel",
+          color: "黒",
+          flaws: "小傷、擦れ",
+        },
+      });
+      expect(run).toHaveBeenCalledWith(
+        "@cf/google/gemma-4-26b-a4b-it",
+        expect.objectContaining({
+          max_completion_tokens: 1536,
+          chat_template_kwargs: { enable_thinking: false },
+        }),
+      );
+
+      run.mockResolvedValueOnce({
+        choices: [
+          {
+            message: { content: "garbage".repeat(60) },
+            finish_reason: "length",
+          },
+        ],
+      });
+      const failure = await call();
+      expect(failure.status).toBe(502);
+      expect(await failure.json()).toEqual({ error: "apiError21" });
+      expect(error).toHaveBeenLastCalledWith(
+        "ai failure",
+        expect.objectContaining({
+          kind: "photo",
+          stage: "json",
+          finishReason: "length",
+          sample: "garbage".repeat(60).slice(0, 300),
+          error: expect.any(String),
+        }),
+      );
+
+      const encoded = btoa(String.fromCharCode(...image));
+      run.mockResolvedValueOnce({ image: `data:image/jpeg;base64,${encoded}` });
+      expect((await call()).status).toBe(502);
+      expect(error).toHaveBeenLastCalledWith(
+        "ai failure",
+        expect.objectContaining({ stage: "shape" }),
+      );
+      run.mockRejectedValueOnce(new Error(`upstream data:image/jpeg;base64,${encoded}`));
+      expect((await call()).status).toBe(502);
+      expect(error).toHaveBeenLastCalledWith(
+        "ai failure",
+        expect.objectContaining({ stage: "ai-call" }),
+      );
+      expect(JSON.stringify(error.mock.calls)).not.toContain("base64");
+      expect(JSON.stringify(error.mock.calls)).not.toContain(encoded);
+
+      run.mockResolvedValueOnce({ response: "{}" });
+      expect((await call()).status).toBe(200);
+      expect(warn).toHaveBeenLastCalledWith(
+        "ai failure",
+        expect.objectContaining({ kind: "photo", stage: "empty" }),
+      );
+      run.mockResolvedValueOnce({ response: '{"prices":["unknown"]}' });
+      const empty = await call("prices");
+      expect(empty.status).toBe(200);
+      expect(await empty.json()).toEqual({ suggestion: { prices: [] } });
+      expect(warn).toHaveBeenLastCalledWith(
+        "ai failure",
+        expect.objectContaining({ kind: "prices", stage: "empty" }),
+      );
+      expect(run).toHaveBeenCalledTimes(6);
+    } finally {
+      error.mockRestore();
+      warn.mockRestore();
+      await db.prepare("DELETE FROM ai_usage").run();
+    }
+  });
   it("reserves AI calls atomically and does not retry failures", async () => {
     const run = vi.fn(async () => ({
       response: JSON.stringify({
@@ -325,6 +436,7 @@ describe("local D1 API", () => {
       }),
     }));
     const aiEnv = { ...env, DB: db, AI_ENABLED: "1", AI: { run } };
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
     const call = () =>
       app.request(
         "http://localhost/api/ai/photo",
@@ -351,7 +463,15 @@ describe("local D1 API", () => {
           { day: "2026-10-02", calls: 1 },
         ],
       });
+      run.mockRejectedValueOnce(new Error("upstream unavailable"));
+      expect((await call()).status).toBe(502);
+      expect((await call()).status).toBe(429);
+      expect(run).toHaveBeenCalledTimes(4);
+      expect(await db.prepare("SELECT calls FROM ai_usage WHERE day='2026-10-02'").first()).toEqual(
+        { calls: 2 },
+      );
     } finally {
+      error.mockRestore();
       vi.useRealTimers();
     }
   });
