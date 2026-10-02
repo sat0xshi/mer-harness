@@ -33,6 +33,15 @@ export interface State {
   settings: Settings | null;
   aiEnabled: boolean;
 }
+export class ApiError extends Error {
+  constructor(
+    public status: number,
+    public code: unknown,
+  ) {
+    super(apiErrorMessage(code));
+  }
+}
+
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`/api${path}`, {
     ...options,
@@ -47,10 +56,15 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
     throw Error(t("loginRequired"));
   if (response.status === 401) window.dispatchEvent(new Event("auth-expired"));
   const body = await response.json();
-  if (!response.ok) throw Error(apiErrorMessage((body as { error?: unknown } | null)?.error));
+  if (!response.ok)
+    throw new ApiError(response.status, (body as { error?: unknown } | null)?.error);
   return body as T;
 }
-export const json = (body: unknown, method = "POST", key = crypto.randomUUID()): RequestInit => ({
+export const json = (
+  body: unknown,
+  method = "POST",
+  key: string = crypto.randomUUID(),
+): RequestInit => ({
   method,
   headers: { "Idempotency-Key": key },
   body: JSON.stringify(body),

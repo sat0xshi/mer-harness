@@ -22,6 +22,11 @@ export const ja = {
   apiError20: "今日のAI枠を使ったよ。手入力で続けよう",
   apiError21: "AIが読み取れなかったよ。手入力で続けられるよ",
   apiError22: "見つからないAPIだよ",
+  autosaveConflict:
+    "別の画面で更新が続いているよ。入力はこの端末に残してあるので、少し待って保存を再試行してね",
+  autosaveFailed:
+    "まだサーバーに保存できていないよ。入力はこの端末に残してあるので、保存を再試行してね",
+  retrySave: "保存を再試行",
   apiErrorUnknown: "うまくいかなかったよ。もう一度試してね",
 
   categoryPhone: "スマホ・タブレット",

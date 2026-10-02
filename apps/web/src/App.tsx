@@ -5,6 +5,15 @@ import { LogoutButton } from "./AuthGate";
 import { api, defaults, json, type Settings, type State } from "./api";
 import { Board } from "./Board";
 import { CelebrationHost, celebrate } from "./celebrate";
+import {
+  activeDraftKey,
+  draftStorage,
+  isEmptyDraft,
+  pickNextDraft,
+  rememberDraft,
+  resumedDraft,
+  startDraft,
+} from "./drafts";
 import { t } from "./i18n/ja";
 import { badges } from "./i18n/models";
 import { ListingFlow, yen } from "./ListingFlow";
@@ -33,6 +42,10 @@ export default function App() {
     if (!next.settings) {
       await api("/settings", json(defaults, "PUT"));
       next.settings = defaults;
+    }
+    if (!last.current) {
+      const resumed = resumedDraft(next.items);
+      if (resumed) setEditing(rememberDraft(resumed));
     }
     setState(next);
     if (next.settings) setSettings(next.settings);
@@ -89,7 +102,10 @@ export default function App() {
   }
   async function newItem() {
     await run(async () => {
-      const item = await api<Item>("/items", json({ id: crypto.randomUUID(), category: "phone" }));
+      const latest = await api<State>("/state");
+      const item = await startDraft(latest.items, (id) =>
+        api<Item>("/items", json({ id, category: "phone" })),
+      );
       setEditing(item);
       await refresh();
     });
@@ -114,6 +130,7 @@ export default function App() {
     );
     setUndo({ item: result.item, key: result.key });
     celebrate("listed", t("celebrateListed"));
+    draftStorage.removeItem(activeDraftKey);
     setEditing(null);
     setBoardTab("listed");
     setPage("board");
@@ -124,7 +141,7 @@ export default function App() {
     : undefined;
   const next =
     state?.items.find((i) => i.status === "to_ship") ||
-    state?.items.find((i) => i.status === "draft") ||
+    pickNextDraft(state?.items || []) ||
     state?.items.find((i) => i.status === "shelf");
   return (
     <>
@@ -175,7 +192,10 @@ export default function App() {
             initial={editing}
             aiEnabled={state.aiEnabled}
             onRefresh={refresh}
-            onExit={() => setEditing(null)}
+            onExit={() => {
+              draftStorage.removeItem(activeDraftKey);
+              setEditing(null);
+            }}
             onListed={listed}
           />
         ) : (
@@ -247,11 +267,14 @@ export default function App() {
                   <div className="card next-card">
                     <div className="next-icon">↗</div>
                     <div>
-                      <h3>{next?.title || (next ? t("unnamed") : t("firstPhoto"))}</h3>
+                      <h3>
+                        {next?.title ||
+                          (next && !isEmptyDraft(next) ? t("unnamed") : t("firstPhoto"))}
+                      </h3>
                       <p className="sub">
                         {next?.status === "to_ship"
                           ? t("prepareShipping")
-                          : next
+                          : next && !isEmptyDraft(next)
                             ? t("questionsRemaining", {
                                 v0:
                                   buildListing(next.category, next.answers, next.platform).total -
@@ -267,11 +290,11 @@ export default function App() {
                         if (next?.status === "to_ship") {
                           setBoardTab("to_ship");
                           setPage("board");
-                        } else if (next) setEditing(next);
+                        } else if (next) setEditing(rememberDraft(next));
                         else void newItem();
                       }}
                     >
-                      {next ? t("continueArrow") : t("startListing")}
+                      {next && !isEmptyDraft(next) ? t("continueArrow") : t("startListing")}
                     </button>
                   </div>
                 </section>
@@ -306,8 +329,8 @@ export default function App() {
             )}
             {page === "board" && (
               <Board
-                items={state.items}
-                onEdit={setEditing}
+                items={state.items.filter((item) => !isEmptyDraft(item))}
+                onEdit={(item) => setEditing(rememberDraft(item))}
                 onStatus={status}
                 busy={busy}
                 initialTab={boardTab}

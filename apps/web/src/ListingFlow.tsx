@@ -8,9 +8,10 @@ import {
   prices,
 } from "@mer/core";
 import { useEffect, useRef, useState } from "react";
-import { api, json } from "./api";
+import { api } from "./api";
 import { CropEditor } from "./CropEditor";
 import { celebrate } from "./celebrate";
+import { flowAutosave, releaseAutosave } from "./flowAutosave";
 import { t } from "./i18n/ja";
 import { categories, platformQuestions } from "./i18n/models";
 import { screenshotJpeg } from "./image";
@@ -29,7 +30,9 @@ export function ListingFlow({
   onExit: () => void;
   onListed: (item: Item) => Promise<void>;
 }) {
-  const [item, setItem] = useState(initial),
+  const [queue] = useState(() => flowAutosave(initial));
+  const [item, setView] = useState(queue.item),
+    [saveError, setSaveError] = useState(queue.error),
     [step, setStep] = useState(0),
     [q, setQ] = useState(0),
     [files, setFiles] = useState<File[]>([]),
@@ -42,6 +45,35 @@ export function ListingFlow({
   useEffect(() => {
     window.scrollTo(0, 0);
   }, [step]);
+  const setItem = (update: Item | ((item: Item) => Item)) => queue.edit(update);
+  useEffect(() => {
+    const update = () => {
+      setView(queue.item);
+      setSaveError(queue.error);
+    };
+    const unsubscribe = queue.subscribe(update);
+    update();
+    queue.schedule();
+    const flush = () => {
+      void queue.flush(false, true).catch(() => {});
+    };
+    const hidden = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+    document.addEventListener("visibilitychange", hidden);
+    window.addEventListener("pagehide", flush);
+    return () => {
+      unsubscribe();
+      document.removeEventListener("visibilitychange", hidden);
+      window.removeEventListener("pagehide", flush);
+      void queue
+        .flush(false, true)
+        .catch(() => {})
+        .finally(() => {
+          if (!queue.observed) releaseAutosave(queue);
+        });
+    };
+  }, [queue]);
   const lock = useRef(false),
     photoId = useRef(crypto.randomUUID());
   const platform = getPlatform(item.platform);
@@ -66,22 +98,7 @@ export function ListingFlow({
     }
   }
   async function save(finish = false) {
-    const saved = await api<Item>(
-      `/items/${item.id}`,
-      json(
-        {
-          version: item.version,
-          category: item.category,
-          answers: item.answers,
-          price: item.price,
-          shipping: item.shipping,
-          comps: item.comps,
-          finish,
-        },
-        "PUT",
-      ),
-    );
-    setItem(saved);
+    const saved = await queue.flush(finish);
     await onRefresh();
     return saved;
   }
@@ -136,7 +153,7 @@ export function ListingFlow({
     });
   }
   const update = (key: string, value: string) =>
-    setItem({ ...item, answers: { ...item.answers, [key]: value } });
+    setItem((item) => ({ ...item, answers: { ...item.answers, [key]: value } }));
   return (
     <div className="flow">
       <div className="section-heading">
@@ -172,6 +189,21 @@ export function ListingFlow({
           </button>
         ))}
       </div>
+      {saveError && (
+        <div className="error" role="alert">
+          {t("autosaveFailed")} {saveError}
+          <button
+            disabled={busy}
+            onClick={() =>
+              action(async () => {
+                await save();
+              })
+            }
+          >
+            {t("retrySave")}
+          </button>
+        </div>
+      )}
       {error && (
         <div className="error" role="alert">
           {error}
@@ -191,7 +223,7 @@ export function ListingFlow({
             <select
               value={item.category}
               onChange={(e) => {
-                setItem({ ...item, category: e.target.value as Category });
+                setItem((item) => ({ ...item, category: e.target.value as Category }));
                 setQ(0);
               }}
             >
@@ -218,7 +250,7 @@ export function ListingFlow({
                 photoId.current = crypto.randomUUID();
                 const state = await api<{ items: Item[] }>("/state");
                 const updated = state.items.find((i) => i.id === item.id);
-                if (updated) setItem({ ...item, photos: updated.photos });
+                if (updated) queue.photos(updated.photos, updated.updated_at);
                 setFiles(files.slice(1));
                 await onRefresh();
                 celebrate("photo", t("photoComplete"));
@@ -253,7 +285,7 @@ export function ListingFlow({
                   onClick={() =>
                     action(async () => {
                       await api(`/items/${item.id}/photos/${p.id}`, { method: "DELETE" });
-                      setItem({ ...item, photos: item.photos.filter((x) => x.id !== p.id) });
+                      queue.photos(queue.item.photos.filter((x) => x.id !== p.id));
                       await onRefresh();
                     })
                   }
@@ -436,10 +468,10 @@ export function ListingFlow({
                 item.comps.length >= 100
               }
               onClick={() => {
-                setItem({
+                setItem((item) => ({
                   ...item,
                   comps: [...item.comps, { price: Math.round(Number(compPrice)), sold: compSold }],
-                });
+                }));
                 setCompPrice("");
               }}
             >
@@ -455,7 +487,7 @@ export function ListingFlow({
                   <button
                     aria-label={t("deleteComparable", { v0: i + 1 })}
                     onClick={() =>
-                      setItem({ ...item, comps: item.comps.filter((_, n) => n !== i) })
+                      setItem((item) => ({ ...item, comps: item.comps.filter((_, n) => n !== i) }))
                     }
                   >
                     ×
@@ -518,7 +550,7 @@ export function ListingFlow({
                   <button
                     key={label}
                     className={item.price === price ? "selected" : ""}
-                    onClick={() => setItem({ ...item, price })}
+                    onClick={() => setItem((item) => ({ ...item, price }))}
                   >
                     <span>
                       {label}
@@ -542,14 +574,14 @@ export function ListingFlow({
                 min={platform.limits.minPrice}
                 max={platform.limits.maxPrice}
                 value={item.price || ""}
-                onChange={(e) => setItem({ ...item, price: Number(e.target.value) })}
+                onChange={(e) => setItem((item) => ({ ...item, price: Number(e.target.value) }))}
               />
             </label>
             <label>
               {t("shippingEstimate")}
               <select
                 value=""
-                onChange={(e) => setItem({ ...item, shipping: Number(e.target.value) })}
+                onChange={(e) => setItem((item) => ({ ...item, shipping: Number(e.target.value) }))}
               >
                 <option value="" disabled>
                   {t("shippingDisclaimer")}
@@ -568,7 +600,7 @@ export function ListingFlow({
                 min="0"
                 max="100000"
                 value={item.shipping}
-                onChange={(e) => setItem({ ...item, shipping: Number(e.target.value) })}
+                onChange={(e) => setItem((item) => ({ ...item, shipping: Number(e.target.value) }))}
               />
             </label>
             <div className="net">
@@ -710,11 +742,12 @@ export function ListingFlow({
                 className="primary"
                 onClick={() => {
                   if (Array.isArray(ai.prices)) {
-                    setItem({
+                    const extracted = ai.prices;
+                    setItem((item) => ({
                       ...item,
                       comps: [
                         ...item.comps,
-                        ...ai.prices
+                        ...extracted
                           .filter(
                             (p) =>
                               Number.isInteger(p) &&
@@ -723,10 +756,10 @@ export function ListingFlow({
                           )
                           .map((p) => ({ price: Number(p), sold: true })),
                       ].slice(0, 100),
-                    });
+                    }));
                   } else {
                     const { category, ...answers } = ai;
-                    setItem({
+                    setItem((item) => ({
                       ...item,
                       category: category as Category,
                       answers: {
@@ -735,7 +768,7 @@ export function ListingFlow({
                           Object.entries(answers).map(([k, v]) => [k, String(v)]),
                         ),
                       },
-                    });
+                    }));
                     setQ(0);
                   }
                   setAi(null);
