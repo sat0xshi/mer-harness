@@ -1,5 +1,6 @@
 import { type Answers, charCount, defaultPlatform } from "@mer/core";
 import { describe, expect, it } from "vitest";
+import copyExamples from "./fixtures/copy-examples.json";
 import {
   buildGeminiRequest,
   claims,
@@ -26,6 +27,60 @@ function validate(text: string, answers: Answers = {}, title = draft.title) {
 }
 
 describe("Gemini request and response", () => {
+  it("contains the research prompt, current JSON specification, limits and product data", () => {
+    const request = buildGeminiRequest(
+      {
+        ...context,
+        answers: {
+          model: "Pixel",
+          shipDays: "shipDaysOneTwo",
+          reason: "機種変更",
+          network: "networkClear",
+          smokePet: "smokePetNone",
+        },
+      },
+      [],
+    );
+    const prompt = request.contents[0].parts[0];
+    if (!("text" in prompt)) throw Error("Missing prompt");
+    for (const text of [
+      "あなたはフリマアプリで「早く売れる」出品文を書くコピーライターです。",
+      "魅力は言い回し・構成・検索キーワードで出し、事実は増やしません。",
+      "状態ランクは回答の表記をそのまま使う。",
+      "傷・汚れ・不具合の回答は必ず書き、位置と程度を回答どおりに書く。",
+      "# タイトル（40文字以内）",
+      "# 説明文（1000文字以内、目安300〜600文字）",
+      "- 出品先サービスや配送サービスの固有名が入っていないか。\ncategory は phone/gadget/clothing/other。brand/model/color は100文字以内、flaws は500文字以内。不明は空文字。title は40文字以内、description は1000文字以内。JSONのみ。\n商品データ: ",
+    ])
+      expect(prompt.text).toContain(text);
+    expect(prompt.text).not.toMatch(/メルカリ|mercari/i);
+    expect(JSON.parse(prompt.text.split("商品データ: ")[1])).toEqual({
+      category: "gadget",
+      answers: {
+        model: "Pixel",
+        shipDays: "1〜2日",
+        reason: "機種変更",
+        network: "○",
+        smokePet: "喫煙者・ペットなし",
+      },
+    });
+    expect(request.generationConfig.responseSchema.properties).not.toHaveProperty("boosters");
+  });
+  it.each([
+    "らくらくメルカリ便",
+    "ゆうゆうメルカリ便",
+    "匿名配送（ヤマト）",
+    "匿名配送（日本郵便）",
+    "未定",
+  ])("neutralizes shipping input %s", (shipping) => {
+    const request = buildGeminiRequest({ ...context, answers: { shipping } }, []);
+    const prompt = request.contents[0].parts[0];
+    if (!("text" in prompt)) throw Error("Missing prompt");
+    expect(JSON.parse(prompt.text.split("商品データ: ")[1]).answers.shipping).toBe(
+      shipping === "未定" ? shipping : "匿名配送（追跡あり）",
+    );
+    expect(prompt.text).not.toMatch(/メルカリ|mercari|ヤマト|日本郵便/i);
+  });
   it("builds structured JSON with LOW thinking, no credentials, and at most three chunk-encoded images", () => {
     const bytes = new Uint8Array(307200).map((_, i) => i % 256);
     const request = buildGeminiRequest(
@@ -97,6 +152,136 @@ describe("Gemini request and response", () => {
 });
 
 describe("listing validation", () => {
+  it.each(copyExamples.map((example, index) => [index + 1, example] as const))(
+    "preserves research example %s with exactly its stated answers",
+    (_, example) => {
+      const answers = Object.fromEntries(
+        Object.entries(example.answers).filter(
+          (entry): entry is [string, string] => typeof entry[1] === "string",
+        ),
+      );
+      const result = validateListingDraft(
+        { ...draft, ...example, flaws: answers.flaws },
+        { ...context, category: "phone", answers },
+      );
+      expect(result).toMatchObject({
+        ok: true,
+        stripped: [],
+        removed: [],
+        draft: {
+          title: example.title,
+          description: example.description,
+          flaws: answers.flaws,
+        },
+      });
+      if (!result.ok) return;
+      expect(result.draft.description).not.toMatch(/美品|動作確認済み|付属品完備|すぐ使えます/);
+      if (!answers.sim)
+        expect(result.draft.description).not.toMatch(/SIMフリー|初期化済み|容量96%|日以内に発送/);
+    },
+  );
+  it.each(["状態", "状態ランク"])(
+    "keeps the answered %s line but strips stronger claims",
+    (label) => {
+      const condition = "目立った傷や汚れなし";
+      expect(
+        validate(`${label}：${condition}\n美品です。傷なし。新品同様。付属品完備。`, {
+          condition: ` ${condition} `,
+          accessories: "本体のみ",
+        }),
+      ).toMatchObject({
+        ok: true,
+        stripped: ["no-damage", "accessories-complete"],
+        draft: { description: `${draft.description}\n${label}：${condition}` },
+      });
+    },
+  );
+  it.each([
+    ["flaws", "傷なしではない"],
+    ["accessories", "付属品完備ではありません"],
+    ["operation", "動作確認済みではありません"],
+    ["battery", "バッテリー良好かどうか不明"],
+    ["reset", "初期化済みではありません"],
+  ])("masks verbatim %s answer text, not just condition", (key, value) => {
+    expect(validate(`回答：${value}`, { [key]: ` ${value} ` })).toMatchObject({
+      ok: true,
+      stripped: [],
+      draft: { description: `${draft.description}\n回答：${value}` },
+    });
+  });
+  it("masks restatements without masking a second unsupported claim in the same line/title", () => {
+    const condition = "目立った傷や汚れなし";
+    expect(
+      validate(`状態：${condition}、美品です。`, { condition }, `${condition} 商品 美品`),
+    ).toMatchObject({
+      ok: true,
+      stripped: ["no-damage"],
+      draft: { title: `${condition} 商品`, description: draft.description },
+    });
+  });
+  it("does not let short claim-free answers such as なし hide fabricated claims", () => {
+    expect(validate("付属品：なし。喫煙者なし。", { accessories: "なし" })).toMatchObject({
+      ok: true,
+      stripped: ["smoke/pet-free"],
+      draft: { description: `${draft.description}\n付属品：なし。` },
+    });
+  });
+  it("keeps unknown battery and future reset wording without treating them as completed claims", () => {
+    const text = "バッテリー最大容量は未確認です。発送前に初期化します。";
+    expect(validate(text, { battery: "未確認", reset: "resetBeforeShipping" })).toMatchObject({
+      ok: true,
+      stripped: [],
+      draft: { description: `${draft.description}\n${text}` },
+    });
+    expect(
+      validate("バッテリー最大容量96%。初期化済み。", {
+        battery: "未確認",
+        reset: "resetBeforeShipping",
+      }),
+    ).toMatchObject({
+      ok: true,
+      stripped: ["battery-good", "reset-done"],
+      draft: { description: draft.description },
+    });
+    expect(validate("バッテリー最大容量99%。", { battery: "96%" })).toMatchObject({
+      ok: true,
+      stripped: ["battery-good"],
+    });
+  });
+  it.each(["喫煙者・ペットなし", "smokePetNone"])(
+    "supports both environment claims from %s",
+    (smokePet) => {
+      expect(validate("喫煙者はいません。ペットなし。", { smokePet })).toMatchObject({
+        ok: true,
+        stripped: [],
+      });
+      expect(validate("喫煙者はいません。ペットなし。", { smokePet: "不明" })).toMatchObject({
+        ok: true,
+        stripped: ["smoke/pet-free"],
+      });
+    },
+  );
+  it("neutralizes output services and reports banned copy removals beside unsupported claims", () => {
+    const result = validateListingDraft(
+      {
+        ...draft,
+        title: "【激安】Mercari 商品",
+        description: `${draft.description}\nらくらくメルカリ便で発送します。\n返品不可。美品です。即購入OKです。`,
+        flaws: "ゆうゆうメルカリ便。ノークレーム。左側に擦れ。",
+      },
+      context,
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      stripped: ["no-damage"],
+      removed: ["hype", "no-returns"],
+      draft: {
+        title: "商品",
+        description: `${draft.description}\n匿名配送（追跡あり）で発送します。\n即購入OKです。`,
+        flaws: "匿名配送（追跡あり）。左側に擦れ。",
+      },
+    });
+  });
   it.each([
     ["傷がありません", "no-damage"],
     ["キズもありません", "no-damage"],

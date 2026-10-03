@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import type { Item } from "@mer/core";
+import { copyBoosters, type Item } from "@mer/core";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -618,6 +618,8 @@ describe("Gemini listing drafts", () => {
         source: "ai",
         suggestion: { category: "phone", brand: "Google", model: "9", color: "黒" },
         stripped: [],
+        removed: [],
+        boosters: copyBoosters(item.category, item.answers),
       });
       expect([...result.suggestion.title]).toHaveLength(40);
       expect([...result.suggestion.description]).toHaveLength(1000);
@@ -685,6 +687,9 @@ describe("Gemini listing drafts", () => {
         expect(await response.json()).toEqual({
           source: "template",
           reason: "no-key",
+          stripped: [],
+          removed: [],
+          boosters: copyBoosters(item.category, item.answers),
           suggestion: {
             category: item.category,
             brand: "",
@@ -722,6 +727,41 @@ describe("Gemini listing drafts", () => {
       ).toBeLessThanOrEqual(300);
       expect(await db.prepare("SELECT calls FROM ai_usage").first()).toEqual({ calls: 1 });
       expect(fetch).toHaveBeenCalledOnce();
+    });
+  });
+  it("reports removed copy and deterministic boosters in both response paths", async () => {
+    const item = await create({
+      model: "Camera",
+      notes: "返品不可。即購入OKです。",
+      shipping: "らくらくメルカリ便",
+    });
+    await isolated(async (fetch) => {
+      const template = await (await call(item.id, { GEMINI_API_KEY: "" })).json();
+      expect(template).toMatchObject({
+        source: "template",
+        removed: ["no-returns"],
+        stripped: [],
+        boosters: copyBoosters(item.category, item.answers),
+      });
+      fetch.mockResolvedValue(
+        Response.json(
+          envelope(
+            JSON.stringify({
+              ...modelDraft,
+              title: "【激安】Camera",
+              description: "写真に写っているカメラです。返品不可。即購入OKです。",
+              boosters: [{ key: "invented", label: "ignore" }],
+            }),
+          ),
+        ),
+      );
+      expect(await (await call(item.id)).json()).toMatchObject({
+        source: "ai",
+        stripped: [],
+        removed: ["hype", "no-returns"],
+        boosters: copyBoosters(item.category, item.answers),
+        suggestion: { title: "Camera", description: "写真に写っているカメラです。即購入OKです。" },
+      });
     });
   });
   it.each([

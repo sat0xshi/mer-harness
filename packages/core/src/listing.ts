@@ -1,3 +1,4 @@
+import { copyAnswer, neutralShipping, removeBannedPhrases, sanitizeServiceNames } from "./copy";
 import { defaultPlatform, getPlatform, type PlatformId } from "./platforms";
 export const categories = {
   phone: "categoryPhone",
@@ -56,6 +57,17 @@ const common: Question[] = [
     label: "questionNegotiation",
     options: ["negotiationAllowed", "negotiationDeclined"],
   },
+  {
+    key: "shipDays",
+    label: "questionShipDays",
+    options: ["shipDaysOneTwo", "shipDaysTwoThree", "shipDaysFourSeven"],
+  },
+  { key: "reason", label: "questionReason", hint: "hintReason" },
+  {
+    key: "smokePet",
+    label: "questionSmokePet",
+    options: ["smokePetNone", "smokePetSmoking", "smokePetPets", "smokePetUnknown"],
+  },
 ];
 export const questions: Record<Category, Question[]> = {
   phone: [
@@ -68,6 +80,11 @@ export const questions: Record<Category, Question[]> = {
       hint: "hintSim",
     },
     { key: "battery", label: "questionBattery", hint: "hintBattery" },
+    {
+      key: "network",
+      label: "questionNetwork",
+      options: ["networkClear", "networkPartial", "networkBlocked", "networkUnknown"],
+    },
     {
       key: "reset",
       label: "questionResetAccounts",
@@ -130,23 +147,46 @@ export function buildListing(
 ) {
   const platform = getPlatform(platformId);
   const cards = platformQuestions(category, platformId);
-  const title = truncate(
-    platform.titleFields
-      .map((k) => answers[k]?.trim())
-      .filter(Boolean)
-      .join(" "),
-    platform.limits.title,
+  const cleanTitle = removeBannedPhrases(
+    sanitizeServiceNames(
+      platform.titleFields
+        .map((k) => answers[k]?.trim())
+        .filter(Boolean)
+        .join(" "),
+    ),
+    "title",
   );
+  const title = truncate(cleanTitle.text, platform.limits.title);
   const rows = platform.descriptionFields.flatMap((key) => {
     const q = cards.find((q) => q.key === key);
-    return q && answers[key]?.trim() ? [{ label: q.label, value: answers[key].trim() }] : [];
+    const value =
+      key === "shipping" ? neutralShipping(answers[key] || "") : copyAnswer(answers[key] || "");
+    if (!q || !value || (key === "shipping" && value === "未定")) return [];
+    // Keep a declined negotiation answer courteous in the public template.
+    return [
+      {
+        label: q.label,
+        value:
+          key === "negotiation" && value === "値下げ不可"
+            ? "恐れ入りますが、お値下げはご遠慮いただけますと幸いです。"
+            : value,
+      },
+    ];
   });
-  const description = truncate(
-    platform.formatDescription(rows, answers.notes?.trim() || ""),
-    platform.limits.description,
+  const cleanDescription = removeBannedPhrases(
+    sanitizeServiceNames(platform.formatDescription(rows, answers.notes?.trim() || "")),
+    "description",
   );
+  const description = truncate(cleanDescription.text, platform.limits.description);
   const answered = cards.filter((q) => answers[q.key]?.trim()).length;
-  return { title, description, answered, total: cards.length, complete: answered === cards.length };
+  return {
+    title,
+    description,
+    answered,
+    total: cards.length,
+    complete: answered === cards.length,
+    removed: [...new Set([...cleanTitle.removed, ...cleanDescription.removed])],
+  };
 }
 export interface Comp {
   price: number;

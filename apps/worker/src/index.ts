@@ -1,6 +1,7 @@
 import {
   buildListing,
   combo,
+  copyBoosters,
   defaultPlatform,
   type GameEvent,
   gameSummary,
@@ -480,7 +481,11 @@ app.post("/api/ai/listing", async (c) => {
   const item = await getItem(c.env.DB, id);
   if (!item) return c.json({ error: "apiError8" }, 404);
   const fallback = (reason: "no-key" | "ai-error" | "validation") => {
-    const { title, description } = buildListing(item.category, item.answers, item.platform);
+    const { title, description, removed } = buildListing(
+      item.category,
+      item.answers,
+      item.platform,
+    );
     return c.json({
       source: "template",
       suggestion: {
@@ -493,6 +498,9 @@ app.post("/api/ai/listing", async (c) => {
         description,
       },
       reason,
+      stripped: [],
+      removed,
+      boosters: copyBoosters(item.category, item.answers),
     });
   };
   const key = c.env.GEMINI_API_KEY?.trim() || "";
@@ -556,7 +564,13 @@ app.post("/api/ai/listing", async (c) => {
     if (!result.ok) throw Error(result.reason);
     if (result.stripped.length)
       console.warn("gemini claims stripped", { stripped: result.stripped });
-    return c.json({ source: "ai", suggestion: result.draft, stripped: result.stripped });
+    return c.json({
+      source: "ai",
+      suggestion: result.draft,
+      stripped: result.stripped,
+      removed: result.removed,
+      boosters: copyBoosters(item.category, item.answers),
+    });
   } catch (error) {
     console.error("gemini failure", {
       stage,

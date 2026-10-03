@@ -2,6 +2,7 @@ import {
   buildListing,
   type Category,
   charCount,
+  copyBoosters,
   formatCurrency,
   getPlatform,
   type Item,
@@ -98,6 +99,8 @@ export function ListingFlow({
     cards = platformQuestions(item.category, item.platform),
     question = cards[Math.min(q, cards.length - 1)],
     suggestions = prices(item.comps, platform);
+  // Derive locally too so chips stay current after edits and before the first draft.
+  const boosters = copyBoosters(item.category, item.answers);
   const generateDraft = useCallback(async () => {
     if (draftInFlight.current || lock.current) return;
     draftInFlight.current = true;
@@ -715,6 +718,26 @@ export function ListingFlow({
               {t("aiDraft")}
             </button>
           </div>
+          {boosters.length > 0 && (
+            <div className="copy-boosters">
+              <small>{t("copyBoosters")}</small>
+              {boosters.map(({ key, label }) => (
+                <button
+                  key={key}
+                  disabled={busy}
+                  onClick={() => {
+                    const index = cards.findIndex((card) => card.key === key);
+                    if (index >= 0) {
+                      setQ(index);
+                      setStep(1);
+                    }
+                  }}
+                >
+                  {t(label)}
+                </button>
+              ))}
+            </div>
+          )}
           {draftNotice && <p role="status">{draftNotice}</p>}
           {platform.copyFields.map(({ key, label }, i) => {
             const value = key === "price" ? String(item.price) : listing[key];

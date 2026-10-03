@@ -1193,3 +1193,15 @@ input[type="radio"] {
   color: var(--c-primary-ink);
   border-color: var(--c-primary);
 }
+.copy-boosters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.copy-boosters button {
+  padding: 4px 8px;
+  font-size: 0.75rem;
+  border-radius: 999px;
+}
