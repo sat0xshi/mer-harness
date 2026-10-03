@@ -2,7 +2,29 @@ import type { Settings } from "./api";
 import type { CelebrationType } from "./celebrate";
 import { t } from "./i18n/ja";
 
-export function particleCount(type: CelebrationType, fx: Settings["fx"], reducedMotion: boolean) {
+export function viewportScale(width: number, height: number) {
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 480 || height <= 0)
+    return { count: 1, size: 1 };
+  const count = Math.max(1, Math.min(2.2, Math.sqrt((width * height) / (480 * 900))));
+  return { count, size: 1 + ((count - 1) / 1.2) * 0.5 };
+}
+export function desktopFeedback(environment: {
+  canVibrate: boolean;
+  coarsePointer: boolean;
+  effects: Settings["fx"];
+  reducedMotion: boolean;
+  sound: boolean;
+}) {
+  const desktop = !environment.canVibrate || !environment.coarsePointer;
+  const flash = desktop && [t("fxNormal"), t("fxVivid")].some((fx) => fx === environment.effects);
+  return { flash, shake: flash && !environment.reducedMotion, sound: environment.sound };
+}
+export function particleCount(
+  type: CelebrationType,
+  fx: Settings["fx"],
+  reducedMotion: boolean,
+  viewport?: Viewport,
+) {
   if (reducedMotion || fx === t("fxOff") || fx === t("fxSubtle")) return 0;
   const count = {
     listed: 240,
@@ -17,9 +39,14 @@ export function particleCount(type: CelebrationType, fx: Settings["fx"], reduced
     copy: 0,
     buckle: 0,
   }[type];
-  return fx === t("fxVivid")
-    ? Math.min(type === "listed" || type === "sold" ? 400 : 150, Math.round(count * 1.2))
-    : count;
+  const base =
+    fx === t("fxVivid")
+      ? Math.min(type === "listed" || type === "sold" ? 400 : 150, Math.round(count * 1.2))
+      : count;
+  return Math.min(
+    900,
+    Math.round(base * (viewport ? viewportScale(viewport.width, viewport.height).count : 1)),
+  );
 }
 
 export function shouldVibrate(
@@ -84,7 +111,7 @@ export function createBurst(
       gravity: wide ? height : 1260,
       rotation: rng() * Math.PI * 2,
       spin: (rng() - 0.5) * 12,
-      size: 3 + rng() * 4,
+      size: (3 + rng() * 4) * viewportScale(width, height).size,
       color: colors[Math.floor(rng() * colors.length)],
       shape: shapes[Math.floor(rng() * shapes.length)],
       age: 0,

@@ -20,7 +20,9 @@ import { t } from "./i18n/ja";
 import { categories, platformQuestions } from "./i18n/models";
 import { screenshotJpeg } from "./image";
 import { isCustomText, listingText, switchPlatform } from "./listingText";
+import { browserStorage } from "./localPrefs";
 import { unlockAudio } from "./sound";
+import { userKeyHeaders } from "./userKey";
 export const yen = formatCurrency;
 export function ListingFlow({
   initial,
@@ -143,7 +145,11 @@ export function ListingFlow({
           title: string;
           description: string;
         };
-      }>("/ai/listing", { method: "POST", body: JSON.stringify({ id: saved.id }) });
+      }>("/ai/listing", {
+        method: "POST",
+        headers: userKeyHeaders(browserStorage, "/ai/listing", "POST"),
+        body: JSON.stringify({ id: saved.id }),
+      });
       queue.edit(
         (current) => {
           const answers = { ...current.answers };

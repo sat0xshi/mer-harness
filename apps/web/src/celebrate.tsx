@@ -1,7 +1,15 @@
 import { formatCurrency } from "@mer/core";
 import { useEffect, useRef, useState } from "react";
 import type { Settings } from "./api";
-import { createBurst, particleCount, saleAmount, shouldVibrate, stepParticles } from "./confetti";
+import {
+  createBurst,
+  desktopFeedback,
+  particleCount,
+  saleAmount,
+  shouldVibrate,
+  stepParticles,
+  viewportScale,
+} from "./confetti";
 import { t } from "./i18n/ja";
 import { playSound, type Sound } from "./sound";
 export type CelebrationType =
@@ -113,12 +121,19 @@ export function CelebrationHost({ settings, onAsk }: { settings: Settings; onAsk
       }
       // Queued feedback may be visual, but stale/background events must never make sound.
       if (Date.now() - e.time < 900) {
-        playSound(sounds[e.type], config.current, e.n);
+        const feedback = desktopFeedback({
+          canVibrate: "vibrate" in navigator,
+          coarsePointer: matchMedia("(pointer: coarse)").matches,
+          effects: config.current.fx,
+          reducedMotion: motion.matches,
+          sound: config.current.sound,
+        });
+        if (feedback.sound) playSound(sounds[e.type], config.current, e.n);
         if (
           shouldVibrate(config.current, {
             reducedMotion: motion.matches,
             visible: document.visibilityState === "visible",
-            supported: "vibrate" in navigator,
+            supported: "vibrate" in navigator && matchMedia("(pointer: coarse)").matches,
           })
         ) {
           vibrating = true;
@@ -145,8 +160,13 @@ export function CelebrationHost({ settings, onAsk }: { settings: Settings; onAsk
       if (queue.current.length > 12) queue.current.shift();
       next();
     };
+    const keydown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && busy.current) finish();
+    };
+    window.addEventListener("keydown", keydown);
     bus.addEventListener("celebrate", listener);
     return () => {
+      window.removeEventListener("keydown", keydown);
       bus.removeEventListener("celebrate", listener);
       clearTimeout(timer);
       cancelVibration();
@@ -190,6 +210,7 @@ export function CelebrationHost({ settings, onAsk }: { settings: Settings; onAsk
       count = Math.min(particleCount(active.type, settings.fx, false), Math.round(count * 1.2));
     if (!count) return;
     let viewport = { width: innerWidth, height: innerHeight };
+    count = Math.min(900, Math.round(count * viewportScale(viewport.width, viewport.height).count));
     let particles = createBurst({ ...viewport, count, type: active.type }, Math.random);
     let frame = 0,
       previous = performance.now(),
@@ -280,6 +301,30 @@ export function CelebrationHost({ settings, onAsk }: { settings: Settings; onAsk
     frame = requestAnimationFrame(draw);
     return stop;
   }, [active, settings.fx, reducedMotion]);
+  const feedback = desktopFeedback({
+    canVibrate: "vibrate" in navigator,
+    coarsePointer: matchMedia("(pointer: coarse)").matches,
+    effects: settings.fx,
+    reducedMotion,
+    sound: settings.sound,
+  });
+  const major = active?.type === "listed" || active?.type === "sold";
+  useEffect(() => {
+    if (!active || !major || !feedback.shake || document.hidden) return;
+    const main = document.querySelector("main");
+    const className = active.type === "sold" ? "feedback-shake-sold" : "feedback-shake-listed";
+    main?.classList.add(className);
+    main?.parentElement?.classList.add("feedback-clip");
+    const cleanup = () => {
+      main?.classList.remove(className);
+      main?.parentElement?.classList.remove("feedback-clip");
+    };
+    const timer = setTimeout(cleanup, 300);
+    return () => {
+      clearTimeout(timer);
+      cleanup();
+    };
+  }, [active, major, feedback.shake]);
   const amount = active?.type === "sold" ? saleAmount(active.n) : undefined;
   const big =
     (active?.type === "listed" || active?.type === "sold") &&
@@ -287,6 +332,15 @@ export function CelebrationHost({ settings, onAsk }: { settings: Settings; onAsk
     settings.fx !== t("fxSubtle");
   return (
     <>
+      {active && major && feedback.flash && !document.hidden && (
+        <div
+          key={`flash:${active.time}:${active.type}`}
+          className="feedback-flash"
+          data-sold={active.type === "sold"}
+          data-reduced-motion={reducedMotion}
+          aria-hidden="true"
+        />
+      )}
       <canvas className="confetti" aria-hidden="true" tabIndex={-1} ref={canvas} />
       <div className="celebration-region" data-big={big} role="status" aria-live="polite">
         {active && (

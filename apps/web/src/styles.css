@@ -1244,3 +1244,89 @@ input[type="radio"] {
   font-size: 0.8rem;
   color: var(--c-primary);
 }
+
+.effects-options,
+.preference-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.switch {
+  min-width: 76px;
+  border-radius: 999px;
+  background: var(--c-line);
+}
+.switch[aria-checked="true"] {
+  background: var(--c-xp);
+  color: #191919;
+}
+.feedback-flash {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 39;
+  background: #fff1b8;
+  animation: feedback-flash 200ms ease-out both;
+  --flash-opacity: 0.17;
+}
+.feedback-flash[data-sold="true"] {
+  --flash-opacity: 0.25;
+}
+.feedback-flash[data-reduced-motion="true"] {
+  --flash-opacity: 0.05;
+  animation-name: feedback-fade;
+}
+.feedback-shake-listed,
+.feedback-shake-sold {
+  --shake-distance: 2px;
+  animation: feedback-shake 300ms ease-out;
+}
+.feedback-shake-sold {
+  --shake-distance: 4px;
+}
+@keyframes feedback-flash {
+  from {
+    opacity: var(--flash-opacity);
+  }
+  to {
+    opacity: 0;
+  }
+}
+@keyframes feedback-fade {
+  0%,
+  100% {
+    opacity: 0;
+  }
+  40% {
+    opacity: var(--flash-opacity);
+  }
+}
+@keyframes feedback-shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  20%,
+  60% {
+    transform: translateX(var(--shake-distance));
+  }
+  40%,
+  80% {
+    transform: translateX(calc(-1 * var(--shake-distance)));
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .feedback-shake-listed,
+  .feedback-shake-sold {
+    animation: none;
+  }
+  .feedback-flash {
+    --flash-opacity: 0.05 !important;
+    animation: feedback-fade 200ms ease-out both !important;
+  }
+}
+
+.feedback-clip {
+  overflow-x: clip;
+}

@@ -24,6 +24,7 @@ export const ja = {
   apiError19: "縮小したJPEGを選んでね",
   apiError20: "今日のAI枠を使ったよ。手入力で続けよう",
   apiError21: "AIが読み取れなかったよ。手入力で続けられるよ",
+  apiError23: "APIキーの形式が正しくありません",
   apiError22: "見つからないAPIだよ",
   autosaveConflict:
     "別の画面で更新が続いているよ。入力はこの端末に残してあるので、少し待って保存を再試行してね",

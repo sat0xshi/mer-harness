@@ -4,6 +4,7 @@ import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { authenticate, devBypass } from "./auth";
+import { jstDay } from "./day";
 import app from "./index";
 import { jpegDimensions } from "./validation";
 
@@ -615,12 +616,16 @@ describe("Gemini listing drafts", () => {
       { finishReason, content: { parts: [{ thought: true, text: "ignore this" }, { text }] } },
     ],
   });
-  const call = (itemId: string, overrides: Record<string, unknown> = {}) =>
+  const call = (itemId: string, overrides: Record<string, unknown> = {}, userKey?: string) =>
     app.request(
       "http://localhost/api/ai/listing",
       {
         method: "POST",
-        headers: { Origin: "http://localhost", "Content-Type": "application/json" },
+        headers: {
+          Origin: "http://localhost",
+          "Content-Type": "application/json",
+          ...(userKey === undefined ? {} : { "X-User-Gemini-Key": userKey }),
+        },
         body: JSON.stringify({ id: itemId }),
       },
       { ...env, DB: db, GEMINI_API_KEY: key, AI_DAILY_LIMIT: "30", ...overrides } as never,
@@ -657,6 +662,199 @@ describe("Gemini listing drafts", () => {
       await db.prepare("DELETE FROM ai_usage").run();
     }
   }
+  const userKey = "AIzaUSERKEY_1234567890abcdefWXYZ";
+  const usage = async () => (await db.prepare("SELECT * FROM ai_usage ORDER BY day").all()).results;
+  it.each([1, 30])(
+    "uses only the user key with %s server calls already consumed",
+    async (limit) => {
+      const item = await create();
+      await isolated(async (fetch) => {
+        await db
+          .prepare("INSERT INTO ai_usage(day,calls) VALUES(?,?)")
+          .bind(jstDay(Date.now()), limit)
+          .run();
+        const before = await usage();
+        fetch.mockResolvedValue(Response.json(envelope(JSON.stringify(modelDraft))));
+        const response = await call(item.id, { AI_DAILY_LIMIT: String(limit) }, userKey);
+        expect(response.status).toBe(200);
+        expect(await response.json()).toMatchObject({ source: "ai", keySource: "user" });
+        expect(fetch).toHaveBeenCalledOnce();
+        expect(fetch.mock.calls[0][1].headers["x-goog-api-key"]).toBe(userKey);
+        expect(await usage()).toEqual(before);
+      });
+    },
+  );
+  it.each([401, 403, 400, 429, 402, 500, 200, 0])(
+    "never retries a failed user key (%s) with server credentials",
+    async (status) => {
+      const item = await create();
+      await isolated(async (fetch) => {
+        const before = await usage();
+        if (status === 0) fetch.mockRejectedValue(Error(`network ${userKey}`));
+        else
+          fetch.mockResolvedValue(
+            new Response(status === 400 ? "API_KEY_INVALID" : "bad output", { status }),
+          );
+        const response = await call(item.id, {}, userKey);
+        expect(response.status).toBe(200);
+        expect(await response.json()).toMatchObject({
+          source: "template",
+          keySource: "none",
+          reason: "user-key-error",
+          errorCode:
+            status === 0
+              ? "network"
+              : [400, 401, 403].includes(status)
+                ? "invalid-key"
+                : status === 429
+                  ? "quota"
+                  : status === 402
+                    ? "billing"
+                    : "error",
+        });
+        expect(fetch).toHaveBeenCalledOnce();
+        expect(fetch.mock.calls[0][1].headers["x-goog-api-key"]).toBe(userKey);
+        expect(await usage()).toEqual(before);
+      });
+    },
+  );
+  it.each(["bad-key!", "", "a".repeat(129)])(
+    "rejects a malformed user key without echoing it",
+    async (invalid) => {
+      const item = await create();
+      await isolated(async (fetch) => {
+        const response = await call(item.id, {}, invalid);
+        expect(response.status).toBe(400);
+        expect(await response.json()).toEqual({ error: "apiError23" });
+        expect(fetch).not.toHaveBeenCalled();
+        expect(await usage()).toEqual([]);
+      });
+    },
+  );
+  it.each([401, 200, "escaped"] as const)(
+    "does not leak an echoed user key through logs, responses or any D1 table (%s)",
+    async (status) => {
+      const item = await create();
+      await isolated(async (fetch, errorLog) => {
+        const log = vi.spyOn(console, "log").mockImplementation(() => {});
+        try {
+          let body = JSON.stringify(envelope(JSON.stringify({ ...modelDraft, title: userKey })));
+          if (status === "escaped")
+            body = body.replaceAll(
+              userKey,
+              [...userKey]
+                .map((char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`)
+                .join(""),
+            );
+          fetch.mockResolvedValue(
+            new Response(body, { status: status === "escaped" ? 200 : status }),
+          );
+          const response = await call(item.id, {}, userKey);
+          const text = await response.text();
+          expect(text).not.toContain(userKey);
+          expect(JSON.parse(text)).toMatchObject({ reason: "user-key-error" });
+          expect(
+            JSON.stringify([
+              log.mock.calls,
+              vi.mocked(console.warn).mock.calls,
+              errorLog.mock.calls,
+            ]),
+          ).not.toContain(userKey);
+          const tables = await db
+            .prepare(
+              "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE '\\_cf\\_%' ESCAPE '\\' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'",
+            )
+            .all<{ name: string }>();
+          // App tables only; Miniflare's internal _cf_ metadata is not readable.
+          expect(tables.results.map(({ name }) => name)).toEqual(
+            expect.arrayContaining(["items", "events", "settings", "ai_usage", "operations"]),
+          );
+          for (const { name } of tables.results) {
+            const rows = await db.prepare(`SELECT * FROM "${name.replaceAll('"', '""')}"`).all();
+            expect(JSON.stringify(rows)).not.toContain(userKey);
+          }
+        } finally {
+          log.mockRestore();
+        }
+      });
+    },
+  );
+  it.each([200, 400, 401, 403, 429, 402, 500, 0])(
+    "key-test makes one minimal user-key request (%s), without quota",
+    async (status) => {
+      await isolated(async (fetch) => {
+        await db
+          .prepare("INSERT INTO ai_usage(day,calls) VALUES(?,30)")
+          .bind(jstDay(Date.now()))
+          .run();
+        const before = await usage();
+        if (status === 0) fetch.mockRejectedValue(Error(userKey));
+        else
+          fetch.mockResolvedValue(
+            new Response(status === 400 ? "API_KEY_INVALID" : userKey, { status }),
+          );
+        const response = await app.request(
+          "http://localhost/api/ai/key-test",
+          {
+            method: "POST",
+            headers: { Origin: "http://localhost", "X-User-Gemini-Key": userKey },
+          },
+          { ...env, DB: db, GEMINI_API_KEY: key, GEMINI_MODEL: " custom-model " } as never,
+        );
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual(
+          status === 200
+            ? { ok: true }
+            : {
+                ok: false,
+                code:
+                  status === 0
+                    ? "network"
+                    : [400, 401, 403].includes(status)
+                      ? "invalid-key"
+                      : status === 429
+                        ? "quota"
+                        : status === 402
+                          ? "billing"
+                          : "error",
+              },
+        );
+        expect(fetch).toHaveBeenCalledOnce();
+        const [url, init] = fetch.mock.calls[0];
+        expect(url).toBe(
+          "https://generativelanguage.googleapis.com/v1beta/models/custom-model:generateContent",
+        );
+        expect(init.headers["x-goog-api-key"]).toBe(userKey);
+        expect(JSON.parse(init.body)).toEqual({
+          contents: [{ parts: [{ text: "ok" }] }],
+          generationConfig: { maxOutputTokens: 1, thinkingConfig: { thinkingLevel: "LOW" } },
+        });
+        expect(await usage()).toEqual(before);
+      });
+    },
+  );
+  it.each([undefined, "", "malformed!"])(
+    "key-test rejects missing or malformed headers: %s",
+    async (value) => {
+      await isolated(async (fetch) => {
+        const response = await app.request(
+          "http://localhost/api/ai/key-test",
+          {
+            method: "POST",
+            headers: {
+              Origin: "http://localhost",
+              ...(value === undefined ? {} : { "X-User-Gemini-Key": value }),
+            },
+          },
+          { ...env, DB: db, GEMINI_API_KEY: key } as never,
+        );
+        expect(response.status).toBe(400);
+        expect(await response.json()).toEqual({ error: "apiError23" });
+        expect(fetch).not.toHaveBeenCalled();
+        expect(await usage()).toEqual([]);
+      });
+    },
+  );
   it("sends the default model, header credentials, ordered first three photos and reserves one call", async () => {
     const item = await create();
     const photos = [0, 1, 2, 3].map((position) => {
@@ -683,6 +881,7 @@ describe("Gemini listing drafts", () => {
       };
       expect(result).toMatchObject({
         source: "ai",
+        keySource: "server",
         suggestion: { category: "phone", brand: "Google", model: "9", color: "黒" },
         stripped: [],
         removed: [],
@@ -753,6 +952,7 @@ describe("Gemini listing drafts", () => {
         expect(response.status).toBe(200);
         expect(await response.json()).toEqual({
           source: "template",
+          keySource: "none",
           reason: "no-key",
           stripped: [],
           removed: [],

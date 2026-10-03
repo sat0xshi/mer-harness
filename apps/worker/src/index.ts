@@ -31,8 +31,11 @@ import {
   buildGeminiRequest,
   DEFAULT_GEMINI_MODEL,
   extractGeminiText,
+  type GeminiErrorCode,
+  geminiErrorCode,
   redactGemini,
   validateListingDraft,
+  validGeminiKey,
 } from "./gemini";
 import {
   categorySchema,
@@ -495,11 +498,40 @@ app.post("/api/rest", async (c) => {
   }).run();
   return c.json({ ok: true });
 });
+app.post("/api/ai/key-test", async (c) => {
+  const key = c.req.header("X-User-Gemini-Key");
+  if (!key || !validGeminiKey(key)) return c.json({ error: "apiError23" }, 400);
+  try {
+    const model = c.env.GEMINI_MODEL?.trim() || DEFAULT_GEMINI_MODEL;
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+      {
+        method: "POST",
+        headers: { "x-goog-api-key": key, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: "ok" }] }],
+          generationConfig: { maxOutputTokens: 1, thinkingConfig: { thinkingLevel: "LOW" } },
+        }),
+        signal: AbortSignal.timeout(10000),
+      },
+    );
+    if (response.ok) return c.json({ ok: true });
+    return c.json({ ok: false, code: geminiErrorCode(response.status, await response.text()) });
+  } catch {
+    return c.json({ ok: false, code: "network" });
+  }
+});
 app.post("/api/ai/listing", async (c) => {
+  const userKey = c.req.header("X-User-Gemini-Key");
+  if (userKey !== undefined && !validGeminiKey(userKey))
+    return c.json({ error: "apiError23" }, 400);
   const { id } = z.object({ id: z.string().uuid() }).parse(await c.req.json());
   const item = await getItem(c.env.DB, id);
   if (!item) return c.json({ error: "apiError8" }, 404);
-  const fallback = (reason: "no-key" | "ai-error" | "validation") => {
+  const fallback = (
+    reason: "no-key" | "ai-error" | "validation" | "user-key-error",
+    errorCode?: GeminiErrorCode,
+  ) => {
     const { title, description, removed } = buildListing(
       item.category,
       item.answers,
@@ -507,6 +539,8 @@ app.post("/api/ai/listing", async (c) => {
     );
     return c.json({
       source: "template",
+      keySource: "none",
+      ...(errorCode ? { errorCode } : {}),
       suggestion: {
         category: item.category,
         brand: "",
@@ -522,7 +556,7 @@ app.post("/api/ai/listing", async (c) => {
       boosters: copyBoosters(item.category, item.answers),
     });
   };
-  const key = c.env.GEMINI_API_KEY?.trim() || "";
+  const key = userKey ?? (c.env.GEMINI_API_KEY?.trim() || "");
   if (!key) {
     console.warn("gemini failure", { stage: "no-key", error: "Missing API key", sample: "" });
     return fallback("no-key");
@@ -544,7 +578,7 @@ app.post("/api/ai/listing", async (c) => {
         size.width <= 1080
       );
     });
-  if (!(await reserveAiCall(c.env.DB, c.env.AI_DAILY_LIMIT)))
+  if (!userKey && !(await reserveAiCall(c.env.DB, c.env.AI_DAILY_LIMIT)))
     return c.json({ error: "apiError20" }, 429);
   let stage: "http" | "shape" | "json" | "validation" = "http";
   let sample = "";
@@ -564,6 +598,8 @@ app.post("/api/ai/listing", async (c) => {
     status = response.status;
     sample = await response.text();
     if (!response.ok) throw Error("Gemini HTTP failure");
+    // Reject echoed credentials even in otherwise valid output.
+    if (userKey && sample.includes(userKey)) throw Error("Credential in model output");
     stage = "json";
     const responseBody: unknown = JSON.parse(sample);
     stage = "shape";
@@ -581,16 +617,25 @@ app.post("/api/ai/listing", async (c) => {
     stage = "validation";
     const result = validateListingDraft(parsed, item);
     if (!result.ok) throw Error(result.reason);
+    // Check decoded output too: JSON unicode escapes can hide a credential in the raw body.
+    if (userKey && JSON.stringify(result.draft).includes(userKey))
+      throw Error("Credential in model output");
     if (result.stripped.length)
       console.warn("gemini claims stripped", { stripped: result.stripped });
     return c.json({
       source: "ai",
+      keySource: userKey ? "user" : "server",
       suggestion: result.draft,
       stripped: result.stripped,
       removed: result.removed,
       boosters: copyBoosters(item.category, item.answers),
     });
   } catch (error) {
+    if (userKey) {
+      const errorCode = geminiErrorCode(status, sample);
+      console.error("gemini failure", { stage, status, errorCode });
+      return fallback("user-key-error", errorCode);
+    }
     console.error("gemini failure", {
       stage,
       error: redactGemini(error instanceof Error ? error.message : String(error), key).slice(

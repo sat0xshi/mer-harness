@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { CelebrationType } from "./celebrate";
-import { createBurst, particleCount, saleAmount, shouldVibrate, stepParticles } from "./confetti";
+import {
+  createBurst,
+  desktopFeedback,
+  particleCount,
+  saleAmount,
+  shouldVibrate,
+  stepParticles,
+  viewportScale,
+} from "./confetti";
 import { t } from "./i18n/ja";
 
 const counts: [CelebrationType, number, number][] = [
@@ -119,5 +127,47 @@ describe("celebration guards", () => {
   );
   it.each([1, 300, 195000, 123.45])("preserves the actual positive sale price %s", (n) => {
     expect(saleAmount(n)).toBe(n);
+  });
+});
+
+describe("desktop parity", () => {
+  it.each(["listed", "sold"] as const)(
+    "scales %s for every effect level without overriding reduced motion",
+    (type) => {
+      const phone = { width: 390, height: 844 };
+      const desktop = { width: 1920, height: 1080 };
+      expect(viewportScale(phone.width, phone.height)).toEqual({ count: 1, size: 1 });
+      expect(viewportScale(desktop.width, desktop.height).count).toBeCloseTo(2.19, 2);
+      expect(viewportScale(desktop.width, desktop.height).size).toBeCloseTo(1.5, 1);
+      for (const fx of [t("fxOff"), t("fxSubtle"), t("fxNormal"), t("fxVivid")]) {
+        const base = particleCount(type, fx, false);
+        expect(particleCount(type, fx, false, phone)).toBe(base);
+        expect(particleCount(type, fx, false, desktop)).toBe(
+          Math.round(base * viewportScale(1920, 1080).count),
+        );
+        for (const viewport of [phone, desktop])
+          expect(particleCount(type, fx, true, viewport)).toBe(0);
+        expect(particleCount(type, fx, false, { width: 10000, height: 10000 })).toBeLessThanOrEqual(
+          900,
+        );
+      }
+      const small = createBurst({ ...phone, count: 1, type }, () => 0.5)[0];
+      const large = createBurst({ ...desktop, count: 1, type }, () => 0.5)[0];
+      expect(large.size / small.size).toBeCloseTo(viewportScale(1920, 1080).size);
+    },
+  );
+  it("uses visual substitutes on desktops and never enables sound on its own", () => {
+    for (const canVibrate of [true, false])
+      for (const coarsePointer of [true, false])
+        for (const reducedMotion of [true, false])
+          for (const sound of [true, false])
+            for (const effects of [t("fxOff"), t("fxSubtle"), t("fxNormal"), t("fxVivid")]) {
+              const flash =
+                (!canVibrate || !coarsePointer) &&
+                (effects === t("fxNormal") || effects === t("fxVivid"));
+              expect(
+                desktopFeedback({ canVibrate, coarsePointer, reducedMotion, sound, effects }),
+              ).toEqual({ flash, shake: flash && !reducedMotion, sound });
+            }
   });
 });

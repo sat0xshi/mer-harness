@@ -18,7 +18,7 @@ describe("copy question translations", () => {
 });
 
 describe("API error messages", () => {
-  it.each(Array.from({ length: 22 }, (_, i) => `apiError${i + 1}`))("translates %s", (code) => {
+  it.each(Array.from({ length: 23 }, (_, i) => `apiError${i + 1}`))("translates %s", (code) => {
     expect(apiErrorMessage(code)).toBe(ja[code as keyof typeof ja]);
     expect(apiErrorMessage(code)).not.toBe(code);
     expect(apiErrorMessage(code)).not.toBe(ja.apiErrorUnknown);

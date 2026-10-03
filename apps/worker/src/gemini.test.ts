@@ -5,6 +5,7 @@ import {
   buildGeminiRequest,
   claims,
   extractGeminiText,
+  geminiErrorCode,
   redactGemini,
   validateListingDraft,
 } from "./gemini";
@@ -495,4 +496,20 @@ it("uses the selected platform in both the prompt and validated draft", () => {
     if (!result.ok) throw Error(result.reason);
     expect(charCount(result.draft.title)).toBe(limit);
   }
+});
+
+describe("safe Gemini error codes", () => {
+  it.each([
+    [400, '{"reason":"API_KEY_INVALID"}', "invalid-key"],
+    [400, "bad request", "error"],
+    [401, "secret", "invalid-key"],
+    [403, "", "invalid-key"],
+    [429, "", "quota"],
+    [402, "", "billing"],
+    [500, "", "error"],
+    [200, "bad output", "error"],
+    [undefined, "timeout", "network"],
+  ] as const)("maps %s to a safe code", (status, body, code) => {
+    expect(geminiErrorCode(status, body)).toBe(code);
+  });
 });

@@ -17,7 +17,15 @@ import {
 import { t } from "./i18n/ja";
 import { badges } from "./i18n/models";
 import { ListingFlow, yen } from "./ListingFlow";
+import {
+  applyLocalPrefs,
+  browserStorage,
+  type LocalPrefs,
+  readLocalPrefs,
+  writeLocalPrefs,
+} from "./localPrefs";
 import { playSound, unlockAudio } from "./sound";
+import { UserKeyPanel } from "./UserKeyPanel";
 
 type Page = "home" | "board" | "achievements" | "settings";
 export default function App() {
@@ -29,6 +37,14 @@ export default function App() {
     [busy, setBusy] = useState(false),
     [ask, setAsk] = useState(false),
     [undo, setUndo] = useState<{ item: Item; key: string } | null>(null);
+  const [localPrefs, setLocalPrefs] = useState(() => readLocalPrefs(browserStorage));
+  const effective = applyLocalPrefs(settings, localPrefs);
+  function changeLocalPrefs(next: LocalPrefs) {
+    const chosen = { ...next, soundAsked: true };
+    writeLocalPrefs(browserStorage, chosen);
+    setLocalPrefs(chosen);
+    setAsk(false);
+  }
   const [boardTab, setBoardTab] = useState<Status>("draft");
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
@@ -44,6 +60,7 @@ export default function App() {
       next.settings = defaults;
     }
     if (!last.current) {
+      setLocalPrefs(readLocalPrefs(browserStorage, next.settings));
       const resumed = resumedDraft(next.items);
       if (resumed) setEditing(rememberDraft(resumed));
     }
@@ -72,8 +89,8 @@ export default function App() {
   }, [refresh]);
   useEffect(() => {
     document.documentElement.dataset.theme = settings.theme;
-    document.documentElement.dataset.fx = settings.fx;
-  }, [settings.theme, settings.fx]);
+    document.documentElement.dataset.fx = effective.fx;
+  }, [settings.theme, effective.fx]);
   useEffect(() => {
     const prevent = (event: BeforeUnloadEvent) => {
       if (editing) event.preventDefault();
@@ -175,237 +192,246 @@ export default function App() {
           </button>
         </div>
       </header>
-      <main>
-        {error && (
-          <div className="error" role="alert">
-            {error}
-            <button onClick={() => run(refresh)}>{t("reload")}</button>
-          </div>
-        )}
-        {!state ? (
-          <div className="card empty">
-            <h1>{t("loadingCargo")}</h1>
-            <p>{t("loadingHint")}</p>
-          </div>
-        ) : editing ? (
-          <ListingFlow
-            key={editing.id}
-            initial={editing}
-            aiEnabled={state.aiEnabled}
-            listingAiEnabled={state.listingAiEnabled}
-            onRefresh={refresh}
-            onExit={() => {
-              draftStorage.removeItem(activeDraftKey);
-              setEditing(null);
-            }}
-            onListed={listed}
-          />
-        ) : (
-          <>
-            {page === "home" && game && (
-              <>
-                <section className="welcome">
-                  <div className="eyebrow">HARNESS THE HASSLE.</div>
-                  <h1>
-                    {t("welcomeFirst")}
-                    <br />
-                    {t("welcomeSecond")}
-                  </h1>
-                  <p className="sub">{t("welcomeHint")}</p>
-                  <div className="strap-art" aria-hidden="true">
-                    <span />
-                    <i />
-                  </div>
-                </section>
-                <section className="card level-card">
-                  <div className="section-heading">
-                    <strong className="level">
-                      Lv.{game.level}{" "}
-                      <small>
-                        {game.level >= 30
-                          ? t("rankRider")
-                          : game.level >= 20
-                            ? t("rankMaster")
-                            : game.level >= 10
-                              ? t("rankArtisan")
-                              : game.level >= 5
-                                ? t("rankBelt")
-                                : t("rankApprentice")}
-                      </small>
+      <div className="main-viewport">
+        <main>
+          {error && (
+            <div className="error" role="alert">
+              {error}
+              <button onClick={() => run(refresh)}>{t("reload")}</button>
+            </div>
+          )}
+          {!state ? (
+            <div className="card empty">
+              <h1>{t("loadingCargo")}</h1>
+              <p>{t("loadingHint")}</p>
+            </div>
+          ) : editing ? (
+            <ListingFlow
+              key={editing.id}
+              initial={editing}
+              aiEnabled={state.aiEnabled}
+              listingAiEnabled={state.listingAiEnabled}
+              onRefresh={refresh}
+              onExit={() => {
+                draftStorage.removeItem(activeDraftKey);
+                setEditing(null);
+              }}
+              onListed={listed}
+            />
+          ) : (
+            <>
+              {page === "home" && game && (
+                <>
+                  <section className="welcome">
+                    <div className="eyebrow">HARNESS THE HASSLE.</div>
+                    <h1>
+                      {t("welcomeFirst")}
+                      <br />
+                      {t("welcomeSecond")}
+                    </h1>
+                    <p className="sub">{t("welcomeHint")}</p>
+                    <div className="strap-art" aria-hidden="true">
+                      <span />
+                      <i />
+                    </div>
+                  </section>
+                  <section className="card level-card">
+                    <div className="section-heading">
+                      <strong className="level">
+                        Lv.{game.level}{" "}
+                        <small>
+                          {game.level >= 30
+                            ? t("rankRider")
+                            : game.level >= 20
+                              ? t("rankMaster")
+                              : game.level >= 10
+                                ? t("rankArtisan")
+                                : game.level >= 5
+                                  ? t("rankBelt")
+                                  : t("rankApprentice")}
+                        </small>
+                      </strong>
+                      <span className="streak">
+                        {game.streak.current}
+                        {t("daySuffix")}
+                      </span>
+                    </div>
+                    <progress
+                      className="xp"
+                      value={game.current}
+                      max={game.need}
+                      aria-label={t("nextLevelXp")}
+                    />
+                    <div className="section-heading sub">
+                      <span>
+                        {game.current} / {game.need} XP
+                      </span>
+                      <span>
+                        {t("untilNext")}
+                        {game.need - game.current} XP
+                      </span>
+                    </div>
+                  </section>
+                  <section className="sales-card">
+                    <span className="eyebrow">{t("salesRecord")}</span>
+                    <strong className="sales">
+                      <AnimatedNumber value={game.sales} settings={effective} format={yen} />
                     </strong>
-                    <span className="streak">
-                      {game.streak.current}
-                      {t("daySuffix")}
-                    </span>
+                    <span className="sub">{t("salesHint")}</span>
+                  </section>
+                  <section className="next-section">
+                    <div className="section-heading">
+                      <h2>{t("todayNext")}</h2>
+                      <span className="eyebrow">NEXT STEP</span>
+                    </div>
+                    <div className="card next-card">
+                      <div className="next-icon">↗</div>
+                      <div>
+                        <h3>
+                          {next?.title ||
+                            (next && !isEmptyDraft(next) ? t("unnamed") : t("firstPhoto"))}
+                        </h3>
+                        <p className="sub">
+                          {next?.status === "to_ship"
+                            ? t("prepareShipping")
+                            : next && !isEmptyDraft(next)
+                              ? t("questionsRemaining", {
+                                  v0:
+                                    buildListing(next.category, next.answers, next.platform).total -
+                                    buildListing(next.category, next.answers, next.platform)
+                                      .answered,
+                                })
+                              : t("nextHint")}
+                        </p>
+                      </div>
+                      <button
+                        className="primary wide"
+                        disabled={busy}
+                        onClick={() => {
+                          if (next?.status === "to_ship") {
+                            setBoardTab("to_ship");
+                            setPage("board");
+                          } else if (next) setEditing(rememberDraft(next));
+                          else void newItem();
+                        }}
+                      >
+                        {next && !isEmptyDraft(next) ? t("continueArrow") : t("startListing")}
+                      </button>
+                    </div>
+                  </section>
+                  <div className="summary-chips">
+                    {(["to_ship", "listed", "shelf"] as const).map((status, i) => (
+                      <button
+                        key={status}
+                        onClick={() => {
+                          setBoardTab(status);
+                          setPage("board");
+                        }}
+                      >
+                        {[t("statusToShip"), t("statusListed"), t("restingShelf")][i]}{" "}
+                        <strong>
+                          {state.items.filter((item) => item.status === status).length}
+                        </strong>
+                      </button>
+                    ))}
                   </div>
-                  <progress
-                    className="xp"
-                    value={game.current}
-                    max={game.need}
-                    aria-label={t("nextLevelXp")}
-                  />
-                  <div className="section-heading sub">
-                    <span>
-                      {game.current} / {game.need} XP
-                    </span>
-                    <span>
+                  <button
+                    className="text-button wide"
+                    disabled={busy}
+                    onClick={() =>
+                      run(async () => {
+                        await api("/rest", json({}));
+                        await refresh();
+                        celebrate("buckle", t("celebrateRest"));
+                      })
+                    }
+                  >
+                    {t("takeRest")}
+                  </button>
+                </>
+              )}
+              {page === "board" && (
+                <Board
+                  items={state.items.filter((item) => !isEmptyDraft(item))}
+                  onEdit={(item) => setEditing(rememberDraft(item))}
+                  onStatus={status}
+                  busy={busy}
+                  initialTab={boardTab}
+                />
+              )}
+              {page === "achievements" && game && (
+                <>
+                  <div className="eyebrow">YOUR GEAR</div>
+                  <h1>{t("achievementsHeading")}</h1>
+                  <section className="card achievement-hero">
+                    <div className="level-ring">Lv.{game.level}</div>
+                    <h2>
                       {t("untilNext")}
                       {game.need - game.current} XP
-                    </span>
-                  </div>
-                </section>
-                <section className="sales-card">
-                  <span className="eyebrow">{t("salesRecord")}</span>
-                  <strong className="sales">
-                    <AnimatedNumber value={game.sales} settings={settings} format={yen} />
-                  </strong>
-                  <span className="sub">{t("salesHint")}</span>
-                </section>
-                <section className="next-section">
-                  <div className="section-heading">
-                    <h2>{t("todayNext")}</h2>
-                    <span className="eyebrow">NEXT STEP</span>
-                  </div>
-                  <div className="card next-card">
-                    <div className="next-icon">↗</div>
-                    <div>
-                      <h3>
-                        {next?.title ||
-                          (next && !isEmptyDraft(next) ? t("unnamed") : t("firstPhoto"))}
-                      </h3>
-                      <p className="sub">
-                        {next?.status === "to_ship"
-                          ? t("prepareShipping")
-                          : next && !isEmptyDraft(next)
-                            ? t("questionsRemaining", {
-                                v0:
-                                  buildListing(next.category, next.answers, next.platform).total -
-                                  buildListing(next.category, next.answers, next.platform).answered,
-                              })
-                            : t("nextHint")}
-                      </p>
-                    </div>
-                    <button
-                      className="primary wide"
-                      disabled={busy}
-                      onClick={() => {
-                        if (next?.status === "to_ship") {
-                          setBoardTab("to_ship");
-                          setPage("board");
-                        } else if (next) setEditing(rememberDraft(next));
-                        else void newItem();
-                      }}
-                    >
-                      {next && !isEmptyDraft(next) ? t("continueArrow") : t("startListing")}
-                    </button>
-                  </div>
-                </section>
-                <div className="summary-chips">
-                  {(["to_ship", "listed", "shelf"] as const).map((status, i) => (
-                    <button
-                      key={status}
-                      onClick={() => {
-                        setBoardTab(status);
-                        setPage("board");
-                      }}
-                    >
-                      {[t("statusToShip"), t("statusListed"), t("restingShelf")][i]}{" "}
-                      <strong>{state.items.filter((item) => item.status === status).length}</strong>
-                    </button>
-                  ))}
-                </div>
-                <button
-                  className="text-button wide"
-                  disabled={busy}
-                  onClick={() =>
-                    run(async () => {
-                      await api("/rest", json({}));
-                      await refresh();
-                      celebrate("buckle", t("celebrateRest"));
-                    })
-                  }
-                >
-                  {t("takeRest")}
-                </button>
-              </>
-            )}
-            {page === "board" && (
-              <Board
-                items={state.items.filter((item) => !isEmptyDraft(item))}
-                onEdit={(item) => setEditing(rememberDraft(item))}
-                onStatus={status}
-                busy={busy}
-                initialTab={boardTab}
-              />
-            )}
-            {page === "achievements" && game && (
-              <>
-                <div className="eyebrow">YOUR GEAR</div>
-                <h1>{t("achievementsHeading")}</h1>
-                <section className="card achievement-hero">
-                  <div className="level-ring">Lv.{game.level}</div>
-                  <h2>
-                    {t("untilNext")}
-                    {game.need - game.current} XP
-                  </h2>
-                  <p>
-                    {game.streak.current}
-                    {t("bestDayPrefix")}
-                    {game.streak.best}
-                    {t("dayUnit")}
-                  </p>
-                  <p>
-                    {t("restTickets")}
-                    {game.streak.tickets}
-                    {t("ticketLimit")}
-                  </p>
-                  <p>
-                    {t("comboPrefix")}
-                    {game.combo.multiplier}
-                    {t("bestPrefix")}
-                    {game.combo.best}
-                    {t("comboUnit")}
-                  </p>
-                </section>
-                <div className="section-heading">
-                  <h2>{t("gear")}</h2>
-                  <span>{game.unlocked.length}/10</span>
-                </div>
-                <div className="badge-grid">
-                  {badges.map(([key, name, condition]) => (
-                    <article
-                      className={`card badge ${game.unlocked.includes(key) ? "earned" : ""}`}
-                      key={key}
-                    >
-                      <span className="badge-icon">{game.unlocked.includes(key) ? "✦" : "◇"}</span>
-                      <h3>{name}</h3>
-                      <p>{condition}</p>
-                    </article>
-                  ))}
-                </div>
-                <section className="card">
-                  <h2>{t("salesMilestones")}</h2>
-                  <strong className="sales">
-                    <AnimatedNumber value={game.sales} settings={settings} format={yen} />
-                  </strong>
-                  {[10000, 50000, 100000, 300000, 500000, 1000000].map((n) => (
-                    <p key={n}>
-                      {game.sales >= n ? "✓" : "○"} {yen(n)}
+                    </h2>
+                    <p>
+                      {game.streak.current}
+                      {t("bestDayPrefix")}
+                      {game.streak.best}
+                      {t("dayUnit")}
                     </p>
-                  ))}
-                </section>
-              </>
-            )}
-            {page === "settings" && (
-              <SettingsPanel
-                settings={settings}
-                busy={busy}
-                save={(next) => run(() => preferences(next))}
-              />
-            )}
-          </>
-        )}
-      </main>
+                    <p>
+                      {t("restTickets")}
+                      {game.streak.tickets}
+                      {t("ticketLimit")}
+                    </p>
+                    <p>
+                      {t("comboPrefix")}
+                      {game.combo.multiplier}
+                      {t("bestPrefix")}
+                      {game.combo.best}
+                      {t("comboUnit")}
+                    </p>
+                  </section>
+                  <div className="section-heading">
+                    <h2>{t("gear")}</h2>
+                    <span>{game.unlocked.length}/10</span>
+                  </div>
+                  <div className="badge-grid">
+                    {badges.map(([key, name, condition]) => (
+                      <article
+                        className={`card badge ${game.unlocked.includes(key) ? "earned" : ""}`}
+                        key={key}
+                      >
+                        <span className="badge-icon">
+                          {game.unlocked.includes(key) ? "✦" : "◇"}
+                        </span>
+                        <h3>{name}</h3>
+                        <p>{condition}</p>
+                      </article>
+                    ))}
+                  </div>
+                  <section className="card">
+                    <h2>{t("salesMilestones")}</h2>
+                    <strong className="sales">
+                      <AnimatedNumber value={game.sales} settings={effective} format={yen} />
+                    </strong>
+                    {[10000, 50000, 100000, 300000, 500000, 1000000].map((n) => (
+                      <p key={n}>
+                        {game.sales >= n ? "✓" : "○"} {yen(n)}
+                      </p>
+                    ))}
+                  </section>
+                </>
+              )}
+              {page === "settings" && (
+                <SettingsPanel
+                  settings={settings}
+                  localPrefs={localPrefs}
+                  onLocalChange={changeLocalPrefs}
+                  busy={busy}
+                  save={(next) => run(() => preferences(next))}
+                />
+              )}
+            </>
+          )}
+        </main>
+      </div>
       {!editing && (
         <nav className="tab-bar" aria-label={t("mainNavigation")}>
           <button
@@ -465,7 +491,7 @@ export default function App() {
           </button>
         </div>
       )}
-      <CelebrationHost settings={settings} onAsk={() => setAsk(true)} />
+      <CelebrationHost settings={effective} onAsk={() => setAsk(true)} />
       {ask && (
         <div className="sound-prompt" role="dialog" aria-labelledby="sound-question">
           <h3 id="sound-question">{t("soundPrompt")}</h3>
@@ -474,7 +500,7 @@ export default function App() {
             <button
               onClick={() =>
                 run(async () => {
-                  await preferences({ ...settings, sound: false, soundAsked: true });
+                  changeLocalPrefs({ ...localPrefs, sound: false });
                   setAsk(false);
                 })
               }
@@ -485,8 +511,9 @@ export default function App() {
               className="primary"
               onClick={() =>
                 run(async () => {
-                  const next = { ...settings, sound: true, soundAsked: true };
-                  await preferences(next);
+                  const prefs = { ...localPrefs, sound: true, soundAsked: true };
+                  changeLocalPrefs(prefs);
+                  const next = applyLocalPrefs(settings, prefs);
                   setAsk(false);
                   playSound("pikon", next);
                 })
@@ -502,10 +529,14 @@ export default function App() {
 }
 function SettingsPanel({
   settings,
+  localPrefs,
+  onLocalChange,
   busy,
   save,
 }: {
   settings: Settings;
+  localPrefs: LocalPrefs;
+  onLocalChange: (prefs: LocalPrefs) => void;
   busy: boolean;
   save: (next: Settings) => Promise<void>;
 }) {
@@ -517,19 +548,61 @@ function SettingsPanel({
       <section className="card settings">
         <LogoutButton />
         <h2>{t("soundFeedback")}</h2>
+        <fieldset>
+          <legend>演出の強さ</legend>
+          <div className="effects-options">
+            {(
+              [
+                ["none", "なし"],
+                ["normal", "ふつう"],
+                ["flashy", "派手"],
+              ] as const
+            ).map(([effects, label]) => (
+              <label className="check" key={effects}>
+                <input
+                  type="radio"
+                  name="effects"
+                  checked={localPrefs.effects === effects}
+                  onChange={() => onLocalChange({ ...localPrefs, effects })}
+                />
+                {label}
+              </label>
+            ))}
+          </div>
+        </fieldset>
         {(
           [
-            ["sound", t("sound")],
+            ["sound", "サウンド"],
+            ["vibration", "バイブ"],
+          ] as const
+        ).map(([key, label]) => (
+          <div className="preference-toggle" key={key}>
+            <span id={`pref-${key}`}>{label}</span>
+            <button
+              className="switch"
+              role="switch"
+              aria-labelledby={`pref-${key}`}
+              aria-checked={localPrefs[key]}
+              onClick={() => {
+                unlockAudio();
+                onLocalChange({ ...localPrefs, [key]: !localPrefs[key] });
+              }}
+            >
+              {localPrefs[key] ? "ON" : "OFF"}
+            </button>
+          </div>
+        ))}
+        {(
+          [
             ["night", t("nightMute")],
             ["soft", t("softSound")],
-            ["haptics", t("vibration")],
           ] as const
         ).map(([key, label]) => (
           <label className="check" key={key}>
             <input
               type="checkbox"
               checked={draft[key]}
-              onChange={(e) => setDraft({ ...draft, [key]: e.target.checked, soundAsked: true })}
+              onChange={(e) => setDraft({ ...draft, [key]: e.target.checked })}
             />
             {label}
           </label>
@@ -566,17 +639,6 @@ function SettingsPanel({
           </select>
         </label>
         <label>
-          {t("effects")}
-          <select
-            value={draft.fx}
-            onChange={(e) => setDraft({ ...draft, fx: e.target.value as Settings["fx"] })}
-          >
-            {[t("fxVivid"), t("fxNormal"), t("fxSubtle"), t("fxOff")].map((fx) => (
-              <option key={fx}>{fx}</option>
-            ))}
-          </select>
-        </label>
-        <label>
           {t("theme")}
           <select
             value={draft.theme}
@@ -603,6 +665,7 @@ function SettingsPanel({
       <button className="primary wide" disabled={busy} onClick={() => save(draft)}>
         {t("saveSettings")}
       </button>
+      <UserKeyPanel />
       <section className="about">
         <h2>{t("appName")}</h2>
         <p>{t("disclaimer")}</p>

@@ -280,3 +280,14 @@ export function redactGemini(text: string, key: string) {
     .replace(/data:image\/[^\s"'<>]+/gi, "[image]")
     .replace(/[A-Za-z0-9+/=_-]{32,}/g, "[redacted]");
 }
+
+export type GeminiErrorCode = "invalid-key" | "quota" | "billing" | "network" | "error";
+export function geminiErrorCode(status: number | undefined, bodyText = ""): GeminiErrorCode {
+  if (status === undefined) return "network";
+  if (status === 401 || status === 403 || (status === 400 && bodyText.includes("API_KEY_INVALID")))
+    return "invalid-key";
+  if (status === 429) return "quota";
+  if (status === 402) return "billing";
+  return "error";
+}
+export const validGeminiKey = (key: string) => /^[A-Za-z0-9_-]{20,128}$/.test(key);

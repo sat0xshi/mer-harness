@@ -55,12 +55,12 @@ test("mobile listing with AI disabled, persistent data, copy and undo", async ({
   await page.getByRole("spinbutton", { name: "販売価格（円）" }).fill("190000");
   await page.getByRole("button", { name: "売れた！", exact: true }).last().click();
   await page.getByRole("button", { name: "元に戻す" }).click();
-  await expect
-    .poll(async () => {
-      const state = await (await page.request.get("/api/state")).json();
-      return state.settings?.soundAsked;
-    })
-    .toBe(true);
+  // The sound prompt is answered locally (fh.fx.v1) or skipped when an earlier choice exists
+  // in the persistent local D1; either way it must not stay open.
+  await expect(page.getByRole("dialog", { name: "音も鳴らす？" })).not.toBeVisible();
+  expect(
+    await page.evaluate(() => JSON.parse(localStorage.getItem("fh.fx.v1") || "null")?.sound),
+  ).not.toBe(true);
   await expect(card).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   expect(errors).toEqual([]);
