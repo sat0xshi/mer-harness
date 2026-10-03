@@ -1,7 +1,7 @@
 import { formatCurrency } from "@mer/core";
 import { useEffect, useRef, useState } from "react";
-import { AnimatedNumber } from "./AnimatedNumber";
 import type { Settings } from "./api";
+import { createBurst, particleCount, saleAmount, shouldVibrate, stepParticles } from "./confetti";
 import { t } from "./i18n/ja";
 import { playSound, type Sound } from "./sound";
 export type CelebrationType =
@@ -57,15 +57,19 @@ const haptics: Record<CelebrationType, number[]> = {
   photo: [10],
   copy: [12, 40, 12],
   buckle: [8, 30, 20],
-  listed: [20, 60, 40],
+  listed: [15, 50, 25],
   shipped: [15, 40, 15, 40, 60],
-  sold: [30, 50, 30, 50, 90],
+  sold: [15, 50, 15, 50, 30],
   levelup: [20, 40, 20, 40, 20, 40, 120],
   badge: [20, 40, 20],
   streak: [25, 80, 25],
   combo: [10, 30, 10],
 };
 export function CelebrationHost({ settings, onAsk }: { settings: Settings; onAsk: () => void }) {
+  const [reducedMotion, setReducedMotion] = useState(
+    () => matchMedia("(prefers-reduced-motion: reduce)").matches,
+  );
+  const stopHaptics = useRef<() => void>(() => {});
   const [active, setActive] = useState<Celebration | null>(null),
     canvas = useRef<HTMLCanvasElement>(null),
     queue = useRef<Celebration[]>([]),
@@ -79,6 +83,23 @@ export function CelebrationHost({ settings, onAsk }: { settings: Settings; onAsk
   ask.current = onAsk;
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout>;
+    let vibrating = false;
+    const motion = matchMedia("(prefers-reduced-motion: reduce)");
+    const cancelVibration = () => {
+      if (vibrating) navigator.vibrate(0);
+      vibrating = false;
+    };
+    stopHaptics.current = cancelVibration;
+    const motionChanged = () => {
+      setReducedMotion(motion.matches);
+      if (motion.matches) cancelVibration();
+    };
+    const visibilityChanged = () => {
+      if (document.visibilityState !== "visible") cancelVibration();
+    };
+    motionChanged();
+    motion.addEventListener("change", motionChanged);
+    document.addEventListener("visibilitychange", visibilityChanged);
     const next = () => {
       if (busy.current || !queue.current.length) return;
       queue.current.sort((a, b) => priority[b.type] - priority[a.type]);
@@ -94,19 +115,26 @@ export function CelebrationHost({ settings, onAsk }: { settings: Settings; onAsk
       if (Date.now() - e.time < 900) {
         playSound(sounds[e.type], config.current, e.n);
         if (
-          config.current.haptics &&
-          !config.current.quiet &&
-          document.visibilityState === "visible" &&
-          "vibrate" in navigator
-        )
+          shouldVibrate(config.current, {
+            reducedMotion: motion.matches,
+            visible: document.visibilityState === "visible",
+            supported: "vibrate" in navigator,
+          })
+        ) {
+          vibrating = true;
           navigator.vibrate(
             haptics[e.type].map((v, i) => (i % 2 ? v : Math.round(v * config.current.hapticScale))),
           );
+        }
       }
-      timer = setTimeout(finish, priority[e.type] >= 5 ? 2000 : 700);
+      timer = setTimeout(
+        finish,
+        e.type === "listed" || e.type === "sold" ? 2800 : priority[e.type] >= 5 ? 2000 : 700,
+      );
     };
     const finish = () => {
       clearTimeout(timer);
+      cancelVibration();
       setActive(null);
       busy.current = false;
       next();
@@ -121,32 +149,28 @@ export function CelebrationHost({ settings, onAsk }: { settings: Settings; onAsk
     return () => {
       bus.removeEventListener("celebrate", listener);
       clearTimeout(timer);
+      cancelVibration();
+      motion.removeEventListener("change", motionChanged);
+      document.removeEventListener("visibilitychange", visibilityChanged);
+      queue.current = [];
+      busy.current = false;
+      skip.current = () => {};
+      stopHaptics.current = () => {};
     };
   }, []);
   useEffect(() => {
-    if (
-      !active ||
-      !canvas.current ||
-      settings.fx === t("fxOff") ||
-      settings.fx === t("fxSubtle") ||
-      matchMedia("(prefers-reduced-motion: reduce)").matches
-    )
-      return;
+    if (!settings.haptics || settings.quiet) stopHaptics.current();
+  }, [settings.haptics, settings.quiet]);
+  useEffect(() => {
+    if (!active || !canvas.current) return;
+    const motion = matchMedia("(prefers-reduced-motion: reduce)");
+    let count = particleCount(active.type, settings.fx, reducedMotion || motion.matches);
+    if (!count) return;
     const cv = canvas.current,
       ctx = cv.getContext("2d");
     if (!ctx) return;
-    let count =
-      (
-        {
-          listed: 60,
-          sold: 120,
-          shipped: 80,
-          levelup: 150,
-          badge: 150,
-          streak: 50,
-          combo: 30,
-        } as Partial<Record<CelebrationType, number>>
-      )[active.type] || 0;
+    // Apply the existing frequency caps before the vivid multiplier.
+    count = particleCount(active.type, t("fxNormal"), false);
     if (active.type === "streak" && ![7, 30, 100].includes(active.n || 0)) count = 0;
     if (active.type === "combo" && active.n !== 4) count = 0;
     if (Date.now() - (last.current[active.type] || 0) < 10000) count = Math.min(60, count);
@@ -162,87 +186,118 @@ export function CelebrationHost({ settings, onAsk }: { settings: Settings; onAsk
       }
       if (bursts >= 3) count = 100;
     }
-    if (settings.fx === t("fxVivid")) count = Math.min(150, Math.round(count * 1.2));
-    cv.width = innerWidth;
-    cv.height = innerHeight;
-    const colors = ["#F5B301", "#3B4BD8", "#00B8A9", "#FF8FB1", "#FFFFFF"];
-    const particles = Array.from({ length: count }, () => ({
-      x: innerWidth / 2,
-      y: innerHeight * 0.35,
-      vx: (Math.random() - 0.5) * 18,
-      vy: -Math.random() * 13 - 3,
-      rotation: Math.random() * 6,
-      color: colors[Math.floor(Math.random() * 5)],
-      circle: Math.random() > 0.5,
-      delay: active.type === "sold" && Math.random() > 0.5 ? 350 : 0,
-    }));
+    if (settings.fx === t("fxVivid"))
+      count = Math.min(particleCount(active.type, settings.fx, false), Math.round(count * 1.2));
+    if (!count) return;
+    let viewport = { width: innerWidth, height: innerHeight };
+    let particles = createBurst({ ...viewport, count, type: active.type }, Math.random);
     let frame = 0,
-      start = performance.now(),
-      previous = start,
+      previous = performance.now(),
       drops = 0,
       stopped = false;
+    const start = previous;
+    const duration = active.type === "listed" || active.type === "sold" ? 2800 : 2400;
+    const clear = () => {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, cv.width, cv.height);
+    };
+    const resize = () => {
+      const next = { width: innerWidth, height: innerHeight };
+      particles = particles.map((p) => ({
+        ...p,
+        x: (p.x * next.width) / viewport.width,
+        y: (p.y * next.height) / viewport.height,
+        vx: (p.vx * next.width) / viewport.width,
+        vy: (p.vy * next.height) / viewport.height,
+        gravity: (next.height / viewport.height) * p.gravity,
+      }));
+      viewport = next;
+      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      cv.width = Math.round(viewport.width * dpr);
+      cv.height = Math.round(viewport.height * dpr);
+    };
+    const stop = () => {
+      stopped = true;
+      cancelAnimationFrame(frame);
+      clear();
+      particles = [];
+      window.removeEventListener("resize", resize);
+      document.removeEventListener("visibilitychange", visibilityChanged);
+      motion.removeEventListener("change", motionChanged);
+    };
+    const visibilityChanged = () => {
+      if (document.hidden) stop();
+    };
+    const motionChanged = () => {
+      if (motion.matches) stop();
+    };
     const draw = (now: number) => {
-      if (stopped || document.hidden || now - start > 2400) {
-        ctx.clearRect(0, 0, cv.width, cv.height);
+      if (stopped || document.hidden || motion.matches || now - start >= duration) {
+        stop();
         return;
       }
       if (now - previous > 30 && ++drops >= 3) {
-        particles.splice(Math.ceil(particles.length / 2));
+        particles = particles.slice(0, Math.ceil(particles.length / 2));
         drops = 0;
       }
-      const delta = Math.min(2, (now - previous) / 16.67);
+      particles = stepParticles(particles, (now - previous) / 1000, viewport);
       previous = now;
-      ctx.clearRect(0, 0, cv.width, cv.height);
+      clear();
+      ctx.setTransform(cv.width / viewport.width, 0, 0, cv.height / viewport.height, 0, 0);
       for (const p of particles) {
-        if (now - start < p.delay) continue;
-        p.vy += 0.35 * delta;
-        p.vx += (Math.random() - 0.5) * 0.2;
-        p.x += p.vx * delta;
-        p.y += p.vy * delta;
-        p.rotation += 0.06 * delta;
+        if (p.age < p.delay) continue;
         ctx.save();
         ctx.translate(p.x, p.y);
         ctx.rotate(p.rotation);
         ctx.fillStyle = p.color;
-        if (p.circle) {
+        ctx.globalAlpha = p.opacity;
+        if (p.shape === "circle") {
           ctx.beginPath();
-          ctx.arc(0, 0, 3, 0, Math.PI * 2);
+          ctx.arc(0, 0, p.size / 2, 0, Math.PI * 2);
           ctx.fill();
-        } else ctx.fillRect(-3, -5, 6, 10);
+        } else if (p.shape === "star") {
+          ctx.beginPath();
+          for (let i = 0; i < 10; i++) {
+            const angle = (i * Math.PI) / 5 - Math.PI / 2;
+            const radius = i % 2 ? p.size * 0.45 : p.size;
+            ctx.lineTo(Math.cos(angle) * radius, Math.sin(angle) * radius);
+          }
+          ctx.closePath();
+          ctx.fill();
+        } else if (p.shape === "ribbon") {
+          ctx.scale(Math.cos(p.age * 8) * 0.4 + 0.6, 1);
+          ctx.fillRect(-p.size / 3, -p.size * 1.5, p.size * 0.65, p.size * 3);
+        } else ctx.fillRect(-p.size / 2, -p.size, p.size, p.size * 2);
         ctx.restore();
       }
-      frame = requestAnimationFrame(draw);
+      if (particles.length) frame = requestAnimationFrame(draw);
+      else stop();
     };
+    resize();
+    window.addEventListener("resize", resize);
+    document.addEventListener("visibilitychange", visibilityChanged);
+    motion.addEventListener("change", motionChanged);
     frame = requestAnimationFrame(draw);
-    const stop = () => {
-      stopped = true;
-      cancelAnimationFrame(frame);
-      ctx.clearRect(0, 0, cv.width, cv.height);
-    };
-    document.addEventListener("visibilitychange", stop);
-    return () => {
-      stop();
-      document.removeEventListener("visibilitychange", stop);
-    };
-  }, [active, settings.fx]);
+    return stop;
+  }, [active, settings.fx, reducedMotion]);
+  const amount = active?.type === "sold" ? saleAmount(active.n) : undefined;
+  const big =
+    (active?.type === "listed" || active?.type === "sold") &&
+    settings.fx !== t("fxOff") &&
+    settings.fx !== t("fxSubtle");
   return (
     <>
       <canvas className="confetti" aria-hidden="true" tabIndex={-1} ref={canvas} />
-      <div className="celebration-region" role="status" aria-live="polite">
+      <div className="celebration-region" data-big={big} role="status" aria-live="polite">
         {active && (
           <button
+            key={`${active.time}:${active.type}`}
             className={`celebration ${settings.fx === t("fxOff") ? "plain" : ""}`}
+            data-reduced-motion={reducedMotion}
             onClick={() => skip.current()}
           >
             {active.text}
-            {active.type === "sold" &&
-              active.n !== undefined &&
-              Number.isFinite(active.n) &&
-              active.n > 0 && (
-                <strong className="sales">
-                  <AnimatedNumber value={active.n} settings={settings} format={formatCurrency} />
-                </strong>
-              )}
+            {amount !== undefined && <strong className="sales">{formatCurrency(amount)}</strong>}
             <small>{t("dismissCelebration")}</small>
           </button>
         )}

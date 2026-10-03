@@ -1020,6 +1020,59 @@ input[type="radio"] {
   box-shadow: none;
   font-size: 0.9rem;
 }
+.celebration-region[data-big="true"] {
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+.celebration-region[data-big="true"] .celebration {
+  width: min(760px, 100%);
+  padding: clamp(24px, 6vw, 56px);
+  border-radius: 28px;
+  font-size: clamp(2rem, 6vw, 4.5rem);
+  font-weight: 900;
+  line-height: 1.3;
+  text-wrap: balance;
+  animation: celebration-pop 2800ms both;
+}
+.celebration-region[data-big="true"] .sales {
+  display: block;
+  margin-top: 16px;
+  font-size: clamp(2rem, 8vw, 5rem);
+  overflow-wrap: anywhere;
+}
+.celebration-region[data-big="true"] small {
+  margin-top: 20px;
+  font-size: 0.75rem;
+}
+.celebration[data-reduced-motion="true"] {
+  animation: none !important;
+  transform: none !important;
+}
+@keyframes celebration-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.55);
+  }
+  12% {
+    opacity: 1;
+    transform: scale(1.08);
+    box-shadow: 0 0 64px var(--c-xp);
+    text-shadow: 0 0 24px var(--c-xp);
+  }
+  22%,
+  82% {
+    opacity: 1;
+    transform: scale(1);
+    box-shadow: 0 0 28px var(--c-xp);
+    text-shadow: 0 0 8px var(--c-xp);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1);
+  }
+}
 .sound-prompt {
   position: fixed;
   z-index: 45;
@@ -1108,6 +1161,12 @@ input[type="radio"] {
   }
 }
 @media (prefers-reduced-motion: reduce) {
+  .confetti {
+    display: none;
+  }
+  .celebration {
+    transform: none !important;
+  }
   *,
   *::before,
   *::after {
