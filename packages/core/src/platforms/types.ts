@@ -1,6 +1,8 @@
 export interface PlatformConfig {
   id: string;
   name: string;
+  serviceName: string;
+  hasSoldFilter: boolean;
   feeRate: number;
   locale: string;
   currency: string;
@@ -15,6 +17,7 @@ export interface PlatformConfig {
   formatDescription: (rows: { label: string; value: string }[], notes: string) => string;
   copyFields: readonly { key: "title" | "description" | "price"; label: string }[];
   formatCopy: (listing: { title: string; description: string; price: number }) => string;
+  activeSearchUrl?: (keyword: string) => string;
   soldSearchUrl: (keyword: string) => string;
   searchHint: string;
   searchLabel: string;

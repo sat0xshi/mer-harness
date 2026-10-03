@@ -30,3 +30,8 @@ describe("API error messages", () => {
     },
   );
 });
+
+it("keeps service names out of the Japanese UI catalog", () => {
+  for (const value of Object.values(ja))
+    expect(value).not.toMatch(/メルカリ|ラクマ|ヤフオク|ジモティー|Yahoo[!！]フリマ/);
+});

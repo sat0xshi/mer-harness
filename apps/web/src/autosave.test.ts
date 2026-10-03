@@ -1,9 +1,10 @@
 import type { Item } from "@mer/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "./api";
-import { AutosaveQueue, type Checkpoint, mergeEdits } from "./autosave";
+import { AutosaveQueue, type Checkpoint, editInput, mergeEdits } from "./autosave";
 import { draftStorage } from "./drafts";
 import { flowAutosave, releaseAutosave } from "./flowAutosave";
+import { switchPlatform } from "./listingText";
 
 const draft = (patch: Partial<Item> = {}): Item => ({
   id: "draft",
@@ -274,5 +275,44 @@ describe("flow save adapter", () => {
     expect(restored.item).toMatchObject({ version: 4, price: 500, answers: { model: "keep" } });
     releaseAutosave(restored);
     draftStorage.removeItem("harness:edits:adapter");
+  });
+});
+
+describe("platform changes", () => {
+  it("saves a selected platform and truncates custom text before sending", async () => {
+    const { queue, save } = setup(
+      draft({ platform: "yahooFleamarket", title: "😀".repeat(60), description: "custom" }),
+    );
+    queue.edit((item) => switchPlatform(item, "mercari"));
+    expect([...queue.item.title]).toHaveLength(40);
+    expect(editInput(queue.item)).toMatchObject({ platform: "mercari", title: "😀".repeat(40) });
+    await queue.flush();
+    expect(save).toHaveBeenCalledOnce();
+    expect(queue.item.platform).toBe("mercari");
+    expect(queue.dirty).toBe(false);
+  });
+  it("keeps a platform switch made during an in-flight save", async () => {
+    const { queue, save } = setup();
+    const pending = deferred<Item>();
+    save.mockImplementationOnce(() => pending.promise);
+    queue.edit((item) => ({ ...item, answers: { model: "a".repeat(80) } }));
+    const flushing = queue.flush();
+    const sent = save.mock.calls[0][0];
+    queue.edit((item) => switchPlatform(item, "yahooFleamarket"));
+    expect(queue.item.title).toHaveLength(65);
+    pending.resolve(saved(sent));
+    await flushing;
+    expect(queue.item.platform).toBe("yahooFleamarket");
+    expect(queue.item.title).toHaveLength(65);
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(queue.dirty).toBe(false);
+  });
+  it("fits remote text to a locally selected platform after a conflict", () => {
+    const base = draft({ platform: "yahooFleamarket", title: "original" });
+    const local = switchPlatform(base, "mercari");
+    const remote = { ...base, title: "😀".repeat(60), version: 1 };
+    const merged = mergeEdits(base, local, remote);
+    expect(merged.platform).toBe("mercari");
+    expect([...merged.title]).toHaveLength(40);
   });
 });

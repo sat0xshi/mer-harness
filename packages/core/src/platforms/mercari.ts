@@ -1,104 +1,31 @@
+import { shared } from "./shared";
 import type { PlatformConfig } from "./types";
+
 export const mercari: PlatformConfig = {
+  ...shared,
   id: "mercari",
+  // Source: https://jp.mercari.com — service identity.
+  serviceName: "メルカリ",
+  // Generic app category; used outside the picker and search links.
   name: "フリマ",
+  // Source: https://jp.mercari.com — selling fee (data checked 2026-10-03).
   feeRate: 10,
-  locale: "ja-JP",
-  currency: "JPY",
-  currencyLabel: "円",
-  limits: { title: 40, description: 1000, minPrice: 300, maxPrice: 9999999 },
-  defaultShipping: 750,
-  shippingMethods: ["匿名配送（ヤマト）", "匿名配送（日本郵便）", "未定"],
-  shippingTable: [
-    { name: "薄手衣類の目安", cost: 230, note: "梱包後の厚み・専用資材費を確認" },
-    { name: "小型ガジェットの目安", cost: 520, note: "専用資材を含む仮の見積り" },
-    { name: "箱付きスマホの目安", cost: 750, note: "補償・追跡ありの方法を確認" },
-    { name: "大型ガジェットの目安", cost: 1050, note: "HoloLens 2 など。梱包後に確認" },
-  ],
-  conditionLabels: [
-    "新品、未使用",
-    "未使用に近い",
-    "目立った傷や汚れなし",
-    "やや傷や汚れあり",
-    "傷や汚れあり",
-    "全体的に状態が悪い",
-  ],
-  titleFields: ["brand", "model", "capacity", "size", "color"],
-  descriptionFields: [
-    "brand",
-    "model",
-    "condition",
-    "capacity",
-    "edition",
-    "size",
-    "measurements",
-    "color",
-    "sim",
-    "network",
-    "battery",
-    "operation",
-    "material",
-    "usage",
-    "storage",
-    "smokePet",
-    "reset",
-    "purchase",
-    "reason",
-    "flaws",
-    "accessories",
-    "shipping",
-    "shipDays",
-    "negotiation",
-  ],
-  formatDescription: (rows, notes) =>
-    rows
-      .map(
-        ({ label, value }) =>
-          `${(descriptionLabels[label] || label).replace(/[？?].*$/, "").replace(/は$|を教えてね$/, "")}：${value}`,
-      )
-      .join("\n") + (notes ? `\n\n${notes}` : ""),
-  copyFields: [
-    { key: "title", label: "タイトル" },
-    { key: "description", label: "説明文" },
-    { key: "price", label: "価格" },
-  ],
-  formatCopy: ({ title, description, price }) => `${title}\n\n${description}\n\n${price}円`,
+  limits: {
+    // Source: https://jp.mercari.com — title limit (2026-10-03).
+    title: 40,
+    // Source: https://jp.mercari.com — description limit (2026-10-03).
+    description: 1000,
+    // Source: https://jp.mercari.com/sell — price floor (2026-10-03).
+    minPrice: 300,
+    // Source: https://jp.mercari.com/sell
+    maxPrice: 9999999,
+  },
+  // Source: https://jp.mercari.com/search?keyword=Pixel&status=sold_out — checked 2026-10-03.
   soldSearchUrl: (keyword) =>
     `https://jp.mercari.com/search?keyword=${encodeURIComponent(keyword)}&status=sold_out`,
-  searchHint: "売り切れた同じ品を見て、相場をメモしよう。",
-  searchLabel: "フリマの売り切れ検索を開く ↗",
-  listingHint: "フリマアプリで内容を確認して、出品しよう。",
-  openLabel: "フリマアプリを開く ↗",
+  // Same search source: sold/closed results confirmed.
+  hasSoldFilter: true,
+  searchLabel: "メルカリで売り切れを検索 ↗",
+  // Source: https://jp.mercari.com/sell
   sellUrl: "https://jp.mercari.com/sell",
-};
-
-const descriptionLabels: Record<string, string> = {
-  questionBrand: "ブランドは？",
-  questionModel: "品名・型番を教えてね",
-  questionCondition: "全体の状態は？",
-  questionFlaws: "傷や汚れはある？",
-  questionAccessories: "付属品はそろってる？",
-  questionShipping: "発送方法は？",
-  questionShipDays: "発送までの日数",
-  questionReason: "出品理由",
-  questionNetwork: "ネットワーク利用制限",
-  questionSmokePet: "喫煙・ペット",
-  questionNegotiation: "値下げの相談は？",
-  questionCapacity: "容量は？",
-  questionColor: "色は？",
-  questionSim: "SIM・ネットワーク利用制限・残債は？",
-  questionBattery: "バッテリーの状態は？",
-  questionResetAccounts: "初期化・アカウント解除は？",
-  questionPurchase: "購入時期・保証は？",
-  questionEdition: "エディションは？",
-  questionOperation: "動作確認したことは？",
-  questionUsage: "使用頻度は？",
-  questionReset: "初期化は？",
-  questionSize: "サイズ表記は？",
-  questionMeasurements: "実寸を教えてね",
-  questionMaterial: "素材は？",
-  questionWearCount: "着用回数は？",
-  questionStorage: "保管環境は？",
-  questionDimensions: "サイズ・寸法は？",
-  questionOperationOther: "使ってみて確認したことは？",
 };

@@ -1,5 +1,8 @@
 // Japanese UI catalog. Core question/status/badge models reference these keys.
 export const ja = {
+  platformPicker: "出品先を選ぶ",
+  otherPlatforms: "ほかのサイトでも見る",
+  noSoldFilter: "売り切れの絞り込みはありません",
   apiError1: "ログインを確認できないよ。ページを再読込してね",
   apiError2: "同じ画面から操作してね",
   apiError3: "データが大きすぎるよ",

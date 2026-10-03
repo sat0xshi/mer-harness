@@ -1,8 +1,12 @@
+import { jmoty } from "./jmoty";
 import { mercari } from "./mercari";
+import { rakuma } from "./rakuma";
 import type { PlatformConfig } from "./types";
+import { yahooAuctions } from "./yahooAuctions";
+import { yahooFleamarket } from "./yahooFleamarket";
 
 export type { PlatformConfig } from "./types";
-export const platforms = { mercari } as const;
+export const platforms = { mercari, yahooFleamarket, rakuma, yahooAuctions, jmoty } as const;
 export type PlatformId = keyof typeof platforms;
 export const defaultPlatform = mercari;
 export function getPlatform(id: string): PlatformConfig {

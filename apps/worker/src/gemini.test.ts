@@ -480,3 +480,19 @@ describe("claim support ignores negated answers", () => {
     expect(result.draft.description).toContain("バッテリー良好");
   });
 });
+
+it("uses the selected platform in both the prompt and validated draft", () => {
+  const selected = { ...context, platform: "yahooFleamarket" as const };
+  const request = buildGeminiRequest(selected, []);
+  expect(JSON.stringify(request)).toContain("65文字以内");
+  const long = { ...draft, title: "あ".repeat(80) };
+  for (const [input, limit] of [
+    [selected, 65],
+    [context, 40],
+  ] as const) {
+    const result = validateListingDraft(long, input);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw Error(result.reason);
+    expect(charCount(result.draft.title)).toBe(limit);
+  }
+});

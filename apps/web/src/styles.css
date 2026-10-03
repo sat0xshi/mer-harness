@@ -1205,3 +1205,42 @@ input[type="radio"] {
   font-size: 0.75rem;
   border-radius: 999px;
 }
+
+.platform-picker,
+.other-platforms {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+  align-items: center;
+}
+.platform-chip {
+  margin: 0;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--c-line);
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: var(--c-surface);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.platform-chip.selected {
+  border-color: var(--c-primary);
+  background: var(--c-primary-soft);
+}
+.platform-chip input {
+  width: auto;
+  margin: 0;
+  accent-color: var(--c-primary);
+}
+.platform-chip:focus-within {
+  outline: 2px solid var(--c-primary);
+  outline-offset: 2px;
+}
+.other-platforms a {
+  font-size: 0.8rem;
+  color: var(--c-primary);
+}

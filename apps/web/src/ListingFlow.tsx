@@ -7,6 +7,7 @@ import {
   getPlatform,
   type Item,
   netProceeds,
+  platforms,
   prices,
 } from "@mer/core";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -18,7 +19,7 @@ import { flowAutosave, releaseAutosave } from "./flowAutosave";
 import { t } from "./i18n/ja";
 import { categories, platformQuestions } from "./i18n/models";
 import { screenshotJpeg } from "./image";
-import { isCustomText, listingText } from "./listingText";
+import { isCustomText, listingText, switchPlatform } from "./listingText";
 import { unlockAudio } from "./sound";
 export const yen = formatCurrency;
 export function ListingFlow({
@@ -99,6 +100,27 @@ export function ListingFlow({
     cards = platformQuestions(item.category, item.platform),
     question = cards[Math.min(q, cards.length - 1)],
     suggestions = prices(item.comps, platform);
+  const keyword = listing.title || item.answers.model || "";
+  const platformPicker = (
+    <div className="platform-picker" role="radiogroup" aria-label={t("platformPicker")}>
+      {Object.entries(platforms).map(([id, option]) => (
+        <label className={`platform-chip ${item.platform === id ? "selected" : ""}`} key={id}>
+          <input
+            type="radio"
+            name="platform"
+            value={id}
+            checked={item.platform === id}
+            disabled={busy}
+            onChange={() => {
+              setItem((current) => switchPlatform(current, id as Item["platform"]));
+              setCopied([]);
+            }}
+          />
+          {option.serviceName}
+        </label>
+      ))}
+    </div>
+  );
   // Derive locally too so chips stay current after edits and before the first draft.
   const boosters = copyBoosters(item.category, item.answers);
   const generateDraft = useCallback(async () => {
@@ -509,14 +531,31 @@ export function ListingFlow({
         <>
           <h1>{t("priceHeading")}</h1>
           <p className="sub">{platform.searchHint}</p>
+          {platformPicker}
           <a
             className="external"
-            href={platform.soldSearchUrl(listing.title || item.answers.model || "")}
+            href={platform.soldSearchUrl(keyword)}
             target="_blank"
             rel="noreferrer"
           >
             {platform.searchLabel}
           </a>
+          {!platform.hasSoldFilter && <small className="sub">{t("noSoldFilter")}</small>}
+          <div className="other-platforms">
+            <small>{t("otherPlatforms")}</small>
+            {Object.values(platforms)
+              .filter((other) => other.id !== item.platform)
+              .map((other) => (
+                <a
+                  key={other.id}
+                  href={other.soldSearchUrl(keyword)}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {other.serviceName}
+                </a>
+              ))}
+          </div>
           <section className="card">
             <h2>{t("comparables")}</h2>
             <div className="two">
@@ -526,7 +565,7 @@ export function ListingFlow({
                 <input
                   inputMode="numeric"
                   type="number"
-                  min="1"
+                  min={Math.min(1, platform.limits.minPrice)}
                   max={platform.limits.maxPrice}
                   value={compPrice}
                   onChange={(e) => setCompPrice(e.target.value)}
@@ -544,7 +583,9 @@ export function ListingFlow({
             <button
               className="wide"
               disabled={
-                !Number(compPrice) ||
+                compPrice === "" ||
+                !Number.isFinite(Number(compPrice)) ||
+                Number(compPrice) < Math.min(1, platform.limits.minPrice) ||
                 Number(compPrice) > platform.limits.maxPrice ||
                 item.comps.length >= 100
               }
@@ -654,7 +695,7 @@ export function ListingFlow({
                 inputMode="numeric"
                 min={platform.limits.minPrice}
                 max={platform.limits.maxPrice}
-                value={item.price || ""}
+                value={item.price === 0 && platform.limits.minPrice > 0 ? "" : item.price}
                 onChange={(e) => setItem((item) => ({ ...item, price: Number(e.target.value) }))}
               />
             </label>
@@ -739,6 +780,7 @@ export function ListingFlow({
             </div>
           )}
           {draftNotice && <p role="status">{draftNotice}</p>}
+          {platformPicker}
           {platform.copyFields.map(({ key, label }, i) => {
             const value = key === "price" ? String(item.price) : listing[key];
             return (

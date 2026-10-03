@@ -1,7 +1,7 @@
 import { type Answers, type Category, questions } from "./listing";
 
 const shippingServices =
-  /(?:らくらく|ゆうゆう|エコ)?メルカリ便|(?:らくらく|ゆうゆう)?mercari便|匿名配送[（(](?:ヤマト|日本郵便)[）)]/gi;
+  /かんたんラクマパック|おてがる配送|(?:らくらく|ゆうゆう|エコ)?メルカリ便|(?:らくらく|ゆうゆう)?mercari便|匿名配送[（(](?:ヤマト|日本郵便)[）)]/gi;
 
 export function neutralShipping(value: string) {
   return value.trim().replace(shippingServices, "匿名配送（追跡あり）");
@@ -24,7 +24,10 @@ export function tidyCopy(text: string) {
 export function sanitizeServiceNames(text: string) {
   const sanitized = text
     .replace(shippingServices, "匿名配送（追跡あり）")
-    .replace(/メルカリ|mercari/gi, "");
+    .replace(
+      /Yahoo[!！]オークション|Yahoo[!！]フリマ|PayPayフリマ|ヤフオク[!！]?|ジモティー|メルカリ|mercari|Rakuma|ラクマ|フリル|jmty/gi,
+      "",
+    );
   // Preserve authored bullets and spacing unless a service name was changed.
   return sanitized === text
     ? text

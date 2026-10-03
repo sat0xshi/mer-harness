@@ -139,6 +139,73 @@ describe("local D1 API", () => {
     // Keep the existing suite's global XP assertions isolated.
     await db.prepare("DELETE FROM events WHERE item_id=?").bind(itemId).run();
   });
+  it("changes platform and validates against the effective title limit", async () => {
+    const itemId = crypto.randomUUID();
+    await request("/items", "POST", { id: itemId, category: "other" });
+    const body = { version: 0, category: "other", answers: {}, price: 0, shipping: 750, comps: [] };
+    const changed = await request(`/items/${itemId}`, "PUT", {
+      ...body,
+      platform: "yahooFleamarket",
+    });
+    expect(changed.status).toBe(200);
+    expect(await changed.json()).toMatchObject({ platform: "yahooFleamarket", version: 1 });
+    const title = "あ".repeat(60);
+    const accepted = await request(`/items/${itemId}`, "PUT", { ...body, version: 1, title });
+    expect(accepted.status).toBe(200);
+    expect(await accepted.json()).toMatchObject({ platform: "yahooFleamarket", title, version: 2 });
+    const rejected = await request(`/items/${itemId}`, "PUT", {
+      ...body,
+      version: 2,
+      platform: "mercari",
+      title,
+    });
+    expect(rejected.status).toBe(400);
+    expect(await rejected.json()).toEqual({ error: "apiError4" });
+    const unchanged = await db
+      .prepare("SELECT platform,title,version FROM items WHERE id=?")
+      .bind(itemId)
+      .first();
+    expect(unchanged).toMatchObject({ platform: "yahooFleamarket", title, version: 2 });
+    const truncated = await request(`/items/${itemId}`, "PUT", {
+      ...body,
+      version: 2,
+      platform: "mercari",
+      title: title.slice(0, 40),
+    });
+    expect(truncated.status).toBe(200);
+    await db.prepare("DELETE FROM events WHERE item_id=?").bind(itemId).run();
+  });
+  it("validates sold prices for the stored platform and preserves a zero-price sale", async () => {
+    for (const [platform, minPrice] of [
+      ["yahooFleamarket", 100],
+      ["yahooAuctions", 1],
+      ["jmoty", 0],
+    ] as const) {
+      const itemId = crypto.randomUUID();
+      await request("/items", "POST", { id: itemId, category: "other", platform });
+      // An existing sale avoids adding global achievement awards to this shared DB.
+      // A nonzero listing price also proves an explicit zero is not treated as missing.
+      await db
+        .prepare("UPDATE items SET status='trading',price=500,sold_price=500 WHERE id=?")
+        .bind(itemId)
+        .run();
+      const invalid = await request(`/items/${itemId}/status`, "POST", {
+        version: 0,
+        status: "trading",
+        soldPrice: minPrice - 1,
+      });
+      expect(invalid.status).toBe(400);
+      expect(await invalid.json()).toEqual({ error: "apiError4" });
+      const valid = await request(`/items/${itemId}/status`, "POST", {
+        version: 0,
+        status: "trading",
+        soldPrice: minPrice,
+      });
+      expect(valid.status).toBe(200);
+      expect(await valid.json()).toMatchObject({ item: { sold_price: minPrice } });
+      await db.prepare("DELETE FROM events WHERE item_id=?").bind(itemId).run();
+    }
+  });
   it("persists the default/explicit platform and rejects unregistered platforms", async () => {
     const explicit = await request("/items", "POST", {
       id: crypto.randomUUID(),

@@ -15,6 +15,8 @@ describe("service-neutral copy", () => {
     "らくらくメルカリ便",
     "ゆうゆうメルカリ便",
     "エコメルカリ便",
+    "かんたんラクマパック",
+    "おてがる配送",
     "匿名配送（ヤマト）",
     "匿名配送（日本郵便）",
   ])("normalizes %s in answers and prose", (shipping) => {
@@ -174,4 +176,33 @@ describe("copy questions and boosters", () => {
     ])
       expect(listing.description).toContain(row);
   });
+});
+
+it.each([
+  "ラクマ",
+  "Rakuma",
+  "rAkUmA",
+  "フリル",
+  "Yahoo!フリマ",
+  "Yahoo！フリマ",
+  "PayPayフリマ",
+  "ヤフオク!",
+  "ヤフオク！",
+  "ヤフオク",
+  "Yahoo!オークション",
+  "Yahoo！オークション",
+  "ジモティー",
+  "jmty",
+  "JMTY",
+])("strips %s completely while preserving generic words", (name) => {
+  expect(sanitizeServiceNames(`【${name}】 フリマ 商品`)).toBe("フリマ 商品");
+  expect(buildListing("other", { model: `${name} 商品`, notes: `${name} フリマ` }).title).toBe(
+    "商品",
+  );
+});
+it("preserves pickup in public copy", () => {
+  expect(sanitizeServiceNames("手渡し")).toBe("手渡し");
+  expect(buildListing("other", { shipping: "手渡し" }, "jmoty").description).toBe(
+    "発送方法：手渡し",
+  );
 });

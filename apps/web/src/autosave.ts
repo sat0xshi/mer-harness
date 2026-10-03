@@ -1,11 +1,12 @@
 import { buildListing, type Item } from "@mer/core";
 
-import { isCustomText, syncTemplateText } from "./listingText";
+import { isCustomText, switchPlatform, syncTemplateText } from "./listingText";
 
-const fields = ["category", "price", "shipping", "comps"] as const;
+const fields = ["category", "platform", "price", "shipping", "comps"] as const;
 const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 export const editInput = (item: Item) => ({
   category: item.category,
+  platform: item.platform,
   answers: item.answers,
   price: item.price,
   shipping: item.shipping,
@@ -34,7 +35,7 @@ export function mergeEdits(base: Item, local: Item, server: Item): Item {
     const { title, description } = buildListing(merged.category, merged.answers, merged.platform);
     Object.assign(merged, { title, description });
   }
-  return merged;
+  return switchPlatform(merged, merged.platform);
 }
 
 export interface Checkpoint {

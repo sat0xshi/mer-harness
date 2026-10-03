@@ -1,43 +1,46 @@
-import { charCount, defaultPlatform, platforms } from "@mer/core";
+import { charCount, type PlatformId, platforms } from "@mer/core";
 import { z } from "zod";
 export const platformSchema = z
   .string()
-  .refine((id) => Object.hasOwn(platforms, id), "Unknown platform");
+  .refine((id): id is PlatformId => Object.hasOwn(platforms, id), "Unknown platform");
+// Broad transport bounds; item handlers enforce the effective platform's limits.
+export const platformBounds = {
+  title: Math.max(...Object.values(platforms).map((p) => p.limits.title)),
+  description: Math.max(...Object.values(platforms).map((p) => p.limits.description)),
+  minPrice: Math.min(...Object.values(platforms).map((p) => p.limits.minPrice)),
+  maxPrice: Math.max(...Object.values(platforms).map((p) => p.limits.maxPrice)),
+};
 export const categorySchema = z.enum(["phone", "gadget", "clothing", "other"]);
 export const statusSchema = z.enum(["draft", "listed", "trading", "to_ship", "done", "shelf"]);
 export const itemInput = z.object({
   version: z.number().int().nonnegative(),
   category: categorySchema,
+  platform: platformSchema.optional(),
   answers: z.record(z.string().max(500)).refine((a) => Object.keys(a).length <= 30),
-  price: z.number().int().min(0).max(defaultPlatform.limits.maxPrice),
+  price: z.number().int().min(0).max(platformBounds.maxPrice),
   shipping: z.number().int().min(0).max(100000),
   comps: z
     .array(
       z.object({
-        price: z.number().int().min(1).max(defaultPlatform.limits.maxPrice),
+        price: z.number().int().min(platformBounds.minPrice).max(platformBounds.maxPrice),
         sold: z.boolean(),
       }),
     )
     .max(100),
   title: z
     .string()
-    .refine((value) => charCount(value) <= defaultPlatform.limits.title)
+    .refine((value) => charCount(value) <= platformBounds.title)
     .optional(),
   description: z
     .string()
-    .refine((value) => charCount(value) <= defaultPlatform.limits.description)
+    .refine((value) => charCount(value) <= platformBounds.description)
     .optional(),
   finish: z.boolean().optional(),
 });
 export const statusInput = z.object({
   version: z.number().int().nonnegative(),
   status: statusSchema,
-  soldPrice: z
-    .number()
-    .int()
-    .min(defaultPlatform.limits.minPrice)
-    .max(defaultPlatform.limits.maxPrice)
-    .optional(),
+  soldPrice: z.number().int().min(platformBounds.minPrice).max(platformBounds.maxPrice).optional(),
   undo: z.string().uuid().optional(),
   shipped: z.boolean().optional(),
 });

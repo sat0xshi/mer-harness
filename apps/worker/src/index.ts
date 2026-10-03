@@ -1,8 +1,8 @@
 import {
   buildListing,
+  charCount,
   combo,
   copyBoosters,
-  defaultPlatform,
   type GameEvent,
   gameSummary,
   getPlatform,
@@ -38,6 +38,7 @@ import {
   categorySchema,
   itemInput,
   jpegDimensions,
+  platformBounds,
   platformSchema,
   settingsInput,
   statusInput,
@@ -203,11 +204,23 @@ app.put("/api/items/:id", async (c) => {
   if (await db.prepare("SELECT key FROM operations WHERE key=?").bind(key).first())
     return c.json(old);
   if (old.version !== input.version) return c.json({ error: "apiError9" }, 409);
-  const listing = buildListing(input.category, input.answers, old.platform),
+  const platformId = input.platform ?? old.platform;
+  const platform = getPlatform(platformId);
+  const listing = buildListing(input.category, input.answers, platformId),
     title = input.title ?? listing.title,
     description = input.description ?? listing.description,
     now = Date.now(),
     today = await day(db, now);
+  if (
+    charCount(title) > platform.limits.title ||
+    charCount(description) > platform.limits.description ||
+    input.price > platform.limits.maxPrice ||
+    input.comps.some(
+      ({ price }) =>
+        price < Math.min(1, platform.limits.minPrice) || price > platform.limits.maxPrice,
+    )
+  )
+    return c.json({ error: "apiError4" }, 400);
   const statements = [
     db
       .prepare(
@@ -216,10 +229,11 @@ app.put("/api/items/:id", async (c) => {
       .bind(key, id, JSON.stringify(old), now, id, input.version),
     db
       .prepare(
-        "UPDATE items SET category=?,answers_json=?,title=?,description=?,price=?,shipping=?,comps_json=?,updated_at=?,version=version+1 WHERE id=? AND version=? AND EXISTS(SELECT 1 FROM operations WHERE key=?)",
+        "UPDATE items SET category=?,platform=?,answers_json=?,title=?,description=?,price=?,shipping=?,comps_json=?,updated_at=?,version=version+1 WHERE id=? AND version=? AND EXISTS(SELECT 1 FROM operations WHERE key=?)",
       )
       .bind(
         input.category,
+        platformId,
         JSON.stringify(input.answers),
         title,
         description,
@@ -244,7 +258,7 @@ app.put("/api/items/:id", async (c) => {
     if (input.answers[q.key]?.trim()) add("answer", `answer:${q.key}`, 5);
   if (input.finish && title.trim() && description.trim())
     add("text", "text", listing.complete ? 20 : 10, { complete: listing.complete });
-  if (input.price >= getPlatform(old.platform).limits.minPrice) add("price", "price", 10);
+  if (input.price >= platform.limits.minPrice) add("price", "price", 10);
   const result = await db.batch(statements);
   if (!result[1].meta.changes) return c.json({ error: "apiError10" }, 409);
   await awards(db, now);
@@ -260,6 +274,11 @@ app.post("/api/items/:id/status", async (c) => {
   if (await db.prepare("SELECT key FROM operations WHERE key=?").bind(key).first())
     return c.json({ item: old, key });
   if (old.version !== input.version) return c.json({ error: "apiError9" }, 409);
+  const { minPrice, maxPrice } = getPlatform(old.platform).limits;
+  // Only an explicit sale price is checked; legacy rows keep their stored price.
+  const soldPrice = input.soldPrice;
+  if (soldPrice !== undefined && (soldPrice < minPrice || soldPrice > maxPrice))
+    return c.json({ error: "apiError4" }, 400);
   if (
     input.status === "listed" &&
     (!old.title || old.price < getPlatform(old.platform).limits.minPrice || !old.photos.length)
@@ -287,7 +306,7 @@ app.post("/api/items/:id/status", async (c) => {
     }
     if (input.status === "trading") {
       next.sold_at = now;
-      next.sold_price = input.soldPrice || old.price;
+      next.sold_price = input.soldPrice ?? old.price;
     }
     if (input.shipped) next.shipped_at = now;
     if (input.status === "done") next.completed_at = now;
@@ -654,13 +673,7 @@ app.post("/api/ai/:kind", async (c) => {
         : z
             .object({
               prices: z
-                .array(
-                  z
-                    .number()
-                    .int()
-                    .min(defaultPlatform.limits.minPrice)
-                    .max(defaultPlatform.limits.maxPrice),
-                )
+                .array(z.number().int().min(platformBounds.minPrice).max(platformBounds.maxPrice))
                 .max(50),
             })
             .parse(normalizePrices(parsed));
