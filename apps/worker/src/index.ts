@@ -564,6 +564,36 @@ app.post("/api/items/:id/photos/:photoId", async (c) => {
   await awards(db, now);
   return c.json({ ok: true });
 });
+app.put("/api/items/:id/photos/:photoId", async (c) => {
+  const db = c.env.DB,
+    id = c.req.param("id"),
+    photoId = z.string().uuid().parse(c.req.param("photoId"));
+  if (
+    !(await db.prepare("SELECT id FROM photos WHERE id=? AND item_id=?").bind(photoId, id).first())
+  )
+    return c.json({ error: "apiError16" }, 404);
+  const bytes = new Uint8Array(await c.req.arrayBuffer()),
+    size = jpegDimensions(bytes);
+  if (
+    bytes.length > 307200 ||
+    !size ||
+    size.width !== size.height ||
+    size.width > 1080 ||
+    size.width < 1
+  )
+    return c.json({ error: "apiError14" }, 400);
+  // Replace in place without photo/retake events or changes to the edit version.
+  const result = await db.batch([
+    db.prepare("UPDATE photos SET data=? WHERE id=? AND item_id=?").bind(bytes.buffer, photoId, id),
+    db
+      .prepare(
+        "UPDATE items SET updated_at=max(updated_at+1,?) WHERE id=? AND EXISTS(SELECT 1 FROM photos WHERE id=? AND item_id=?)",
+      )
+      .bind(Date.now(), id, photoId, id),
+  ]);
+  if (!result[0].meta.changes) return c.json({ error: "apiError16" }, 404);
+  return c.json({ ok: true });
+});
 app.get("/api/photos/:id", async (c) => {
   const p = await c.env.DB.prepare("SELECT data FROM photos WHERE id=?")
     .bind(c.req.param("id"))

@@ -1,13 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import { t } from "./i18n/ja";
 import { defaultCrop, drawCrop, jpeg, loadImage } from "./image";
+export interface CropResult {
+  upload: Blob;
+  original: Blob | null;
+  enhanced: boolean;
+}
 export function CropEditor({
   file,
   onSave,
   onCancel,
 }: {
   file: File;
-  onSave: (blob: Blob) => Promise<void>;
+  onSave: (result: CropResult) => Promise<void>;
   onCancel: () => void;
 }) {
   const canvas = useRef<HTMLCanvasElement>(null),
@@ -17,7 +22,8 @@ export function CropEditor({
     [ready, setReady] = useState(false),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
-    [compare, setCompare] = useState(0);
+    [compare, setCompare] = useState(0),
+    [holding, setHolding] = useState(false);
   const original = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
     let active = true;
@@ -48,148 +54,185 @@ export function CropEditor({
       <div className="eyebrow">PHOTO STUDIO · 1:1</div>
       <h2>{t("cropHeading")}</h2>
       <p className="sub">{t("cropHint")}</p>
-      <div
-        className="crop-stage"
-        onPointerDown={(e) => {
-          drag.current = { x: e.clientX, y: e.clientY };
-          e.currentTarget.setPointerCapture(e.pointerId);
-        }}
-        onPointerMove={(e) => {
-          if (!drag.current) return;
-          const dx = e.clientX - drag.current.x,
-            dy = e.clientY - drag.current.y;
-          drag.current = { x: e.clientX, y: e.clientY };
-          setCrop((c) => ({
-            ...c,
-            x: Math.max(-1, Math.min(1, c.x - dx / 120)),
-            y: Math.max(-1, Math.min(1, c.y - dy / 120)),
-          }));
-        }}
-        onPointerUp={() => {
-          drag.current = null;
-        }}
-        onPointerCancel={() => {
-          drag.current = null;
-        }}
-      >
-        <canvas ref={canvas} />
-        <canvas
-          ref={original}
-          className="original"
-          style={{ clipPath: `inset(0 ${100 - compare}% 0 0)` }}
-        />
-        <span className="crop-guide" />
-      </div>
-      <label>
-        {t("cropCompare")}
-        <input
-          type="range"
-          min="0"
-          max="100"
-          value={compare}
-          onChange={(e) => setCompare(Number(e.target.value))}
-        />
-      </label>
-      <label>
-        {t("cropZoom")}
-        <input
-          type="range"
-          min="1"
-          max="3"
-          step="0.01"
-          value={crop.zoom}
-          onChange={(e) => setCrop({ ...crop, zoom: Number(e.target.value) })}
-        />
-      </label>
-      <div className="two">
-        <label>
-          {t("cropHorizontal")}
+      <fieldset disabled={busy} className="crop-controls">
+        <label className="check">
           <input
-            type="range"
-            min="-1"
-            max="1"
-            step="0.01"
-            value={crop.x}
-            onChange={(e) => setCrop({ ...crop, x: Number(e.target.value) })}
+            type="checkbox"
+            role="switch"
+            aria-checked={crop.enhance}
+            checked={crop.enhance}
+            onChange={(e) => setCrop({ ...crop, enhance: e.target.checked })}
           />
+          {t("cropEnhance")}
         </label>
-        <label>
-          {t("cropVertical")}
-          <input
-            type="range"
-            min="-1"
-            max="1"
-            step="0.01"
-            value={crop.y}
-            onChange={(e) => setCrop({ ...crop, y: Number(e.target.value) })}
+        <p className="sub">{t("cropEnhanceHint")}</p>
+        <div
+          className="crop-stage"
+          onPointerDown={(e) => {
+            if (busy) return;
+            drag.current = { x: e.clientX, y: e.clientY };
+            e.currentTarget.setPointerCapture(e.pointerId);
+          }}
+          onPointerMove={(e) => {
+            if (busy || !drag.current) return;
+            const dx = e.clientX - drag.current.x,
+              dy = e.clientY - drag.current.y;
+            drag.current = { x: e.clientX, y: e.clientY };
+            setCrop((c) => ({
+              ...c,
+              x: Math.max(-1, Math.min(1, c.x - dx / 120)),
+              y: Math.max(-1, Math.min(1, c.y - dy / 120)),
+            }));
+          }}
+          onPointerUp={() => {
+            drag.current = null;
+          }}
+          onPointerCancel={() => {
+            drag.current = null;
+          }}
+        >
+          <canvas ref={canvas} />
+          <canvas
+            ref={original}
+            className="original"
+            style={{
+              clipPath: `inset(0 ${100 - (holding ? 100 : crop.enhance ? compare : 0)}% 0 0)`,
+            }}
           />
-        </label>
-      </div>
-      <label>
-        {t("cropBrightness")}
-        <input
-          type="range"
-          min="0.7"
-          max="1.5"
-          step="0.01"
-          value={crop.brightness}
-          onChange={(e) => setCrop({ ...crop, brightness: Number(e.target.value) })}
-        />
-      </label>
-      <label className="check">
-        <input
-          type="checkbox"
-          checked={crop.auto}
-          onChange={(e) => setCrop({ ...crop, auto: e.target.checked })}
-        />
-        {t("cropAuto")}
-      </label>
-      <label className="check">
-        <input
-          type="checkbox"
-          checked={crop.white}
-          onChange={(e) => setCrop({ ...crop, white: e.target.checked })}
-        />
-        {t("cropWhite")}
-      </label>
-      {crop.white && (
-        <>
-          <p className="sub">{t("cropWhiteHint")}</p>
-          <label>
-            {t("cropThreshold")}
-            <input
-              type="range"
-              min="10"
-              max="150"
-              value={crop.threshold}
-              onChange={(e) => setCrop({ ...crop, threshold: Number(e.target.value) })}
-            />
-          </label>
-        </>
-      )}
-      {error && <p role="alert">{error}</p>}
-      <div className="actions">
-        <button onClick={() => setCrop(defaultCrop)}>{t("resetCrop")}</button>
+          <span className="crop-guide" />
+        </div>
         <button
-          className="primary"
-          disabled={!ready || busy}
-          onClick={async () => {
-            if (!canvas.current) return;
-            setBusy(true);
-            try {
-              await onSave(await jpeg(canvas.current));
-            } catch (e) {
-              setError((e as Error).message);
-              setBusy(false);
+          type="button"
+          onPointerDown={(e) => {
+            e.currentTarget.setPointerCapture(e.pointerId);
+            setHolding(true);
+          }}
+          onPointerUp={() => setHolding(false)}
+          onPointerCancel={() => setHolding(false)}
+          onLostPointerCapture={() => setHolding(false)}
+          onBlur={() => setHolding(false)}
+          onKeyDown={(e) => {
+            if (e.key === " " || e.key === "Enter") {
+              e.preventDefault();
+              setHolding(true);
+            }
+          }}
+          onKeyUp={(e) => {
+            if (e.key === " " || e.key === "Enter") {
+              e.preventDefault();
+              setHolding(false);
             }
           }}
         >
-          {busy ? t("saving") : t("acceptCrop")}
+          {t("cropShowOriginal")}
         </button>
-      </div>
-      <button className="text-button" onClick={onCancel}>
-        {t("cancelPhoto")}
-      </button>
+        <label>
+          {t("cropCompare")}
+          <input
+            type="range"
+            min="0"
+            max="100"
+            value={compare}
+            onChange={(e) => setCompare(Number(e.target.value))}
+          />
+        </label>
+        <label>
+          {t("cropZoom")}
+          <input
+            type="range"
+            min="1"
+            max="3"
+            step="0.01"
+            value={crop.zoom}
+            onChange={(e) => setCrop({ ...crop, zoom: Number(e.target.value) })}
+          />
+        </label>
+        <div className="two">
+          <label>
+            {t("cropHorizontal")}
+            <input
+              type="range"
+              min="-1"
+              max="1"
+              step="0.01"
+              value={crop.x}
+              onChange={(e) => setCrop({ ...crop, x: Number(e.target.value) })}
+            />
+          </label>
+          <label>
+            {t("cropVertical")}
+            <input
+              type="range"
+              min="-1"
+              max="1"
+              step="0.01"
+              value={crop.y}
+              onChange={(e) => setCrop({ ...crop, y: Number(e.target.value) })}
+            />
+          </label>
+        </div>
+        <label>
+          {t("cropBrightness")}
+          <input
+            type="range"
+            min="0.7"
+            max="1.5"
+            step="0.01"
+            disabled={!crop.enhance}
+            value={crop.brightness}
+            onChange={(e) => setCrop({ ...crop, brightness: Number(e.target.value) })}
+          />
+        </label>
+        <label className="check">
+          <input
+            type="checkbox"
+            disabled={!crop.enhance}
+            checked={crop.white}
+            onChange={(e) => setCrop({ ...crop, white: e.target.checked })}
+          />
+          {t("cropWhite")}
+        </label>
+        {crop.enhance && crop.white && (
+          <>
+            <p className="sub">{t("cropWhiteHint")}</p>
+            <label>
+              {t("cropThreshold")}
+              <input
+                type="range"
+                min="10"
+                max="150"
+                value={crop.threshold}
+                onChange={(e) => setCrop({ ...crop, threshold: Number(e.target.value) })}
+              />
+            </label>
+          </>
+        )}
+        {error && <p role="alert">{error}</p>}
+        <div className="actions">
+          <button onClick={() => setCrop(defaultCrop)}>{t("resetCrop")}</button>
+          <button
+            className="primary"
+            disabled={!ready || busy}
+            onClick={async () => {
+              if (!canvas.current || !original.current || busy) return;
+              setBusy(true);
+              try {
+                const upload = await jpeg(canvas.current);
+                const before = crop.enhance ? await jpeg(original.current) : null;
+                await onSave({ upload, original: before, enhanced: crop.enhance });
+              } catch (e) {
+                setError((e as Error).message);
+                setBusy(false);
+              }
+            }}
+          >
+            {busy ? t("saving") : t("acceptCrop")}
+          </button>
+        </div>
+        <button className="text-button" onClick={onCancel}>
+          {t("cancelPhoto")}
+        </button>
+      </fieldset>
     </section>
   );
 }

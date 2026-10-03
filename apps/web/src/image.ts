@@ -1,10 +1,17 @@
+import {
+  analyzeAdjustment,
+  applyAdjustment,
+  gridMaxSide,
+  type SubjectBox,
+  subjectBox,
+} from "./enhance";
 import { t } from "./i18n/ja";
 export interface Crop {
   zoom: number;
   x: number;
   y: number;
   brightness: number;
-  auto: boolean;
+  enhance: boolean;
   white: boolean;
   threshold: number;
 }
@@ -12,8 +19,8 @@ export const defaultCrop: Crop = {
   zoom: 1,
   x: 0,
   y: 0,
-  brightness: 1.1,
-  auto: true,
+  brightness: 1,
+  enhance: true,
   white: false,
   threshold: 45,
 };
@@ -22,24 +29,81 @@ export async function loadImage(file: Blob) {
   const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
   return bitmap;
 }
+// Weak keys release the cached crop when the editor releases its bitmap.
+const subjectBoxes = new WeakMap<ImageBitmap, SubjectBox>();
+function autoBox(image: ImageBitmap): SubjectBox {
+  const cached = subjectBoxes.get(image);
+  if (cached) return cached;
+  const small = document.createElement("canvas");
+  const scale = Math.min(1, gridMaxSide / Math.max(image.width, image.height));
+  small.width = Math.max(1, Math.round(image.width * scale));
+  small.height = Math.max(1, Math.round(image.height * scale));
+  const ctx = small.getContext("2d", { willReadFrequently: true });
+  if (!ctx) throw Error(t("canvasError"));
+  ctx.drawImage(image, 0, 0, small.width, small.height);
+  const box = subjectBox(
+    ctx.getImageData(0, 0, small.width, small.height).data,
+    small.width,
+    small.height,
+  );
+  const size = Math.min(
+    image.width,
+    image.height,
+    Math.ceil(box.size * Math.max(image.width / small.width, image.height / small.height)),
+  );
+  const result = {
+    x: Math.max(
+      0,
+      Math.min(
+        image.width - size,
+        Math.round(((box.x + box.size / 2) * image.width) / small.width - size / 2),
+      ),
+    ),
+    y: Math.max(
+      0,
+      Math.min(
+        image.height - size,
+        Math.round(((box.y + box.size / 2) * image.height) / small.height - size / 2),
+      ),
+    ),
+    size,
+  };
+  subjectBoxes.set(image, result);
+  return result;
+}
 export function drawCrop(
   canvas: HTMLCanvasElement,
   image: ImageBitmap,
   crop: Crop,
   processed = true,
 ) {
+  const enhanced = processed && crop.enhance;
+  const plainSide = Math.min(image.width, image.height);
+  const base = enhanced
+    ? autoBox(image)
+    : { x: (image.width - plainSide) / 2, y: (image.height - plainSide) / 2, size: plainSide };
   const size = Math.min(1080, image.width, image.height),
-    side = Math.min(image.width, image.height) / crop.zoom;
+    side = base.size / Math.max(1, crop.zoom);
   canvas.width = size;
   canvas.height = size;
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   if (!ctx) throw Error(t("canvasError"));
-  const sx = ((image.width - side) / 2) * (1 + crop.x),
-    sy = ((image.height - side) / 2) * (1 + crop.y);
+  const pan = (origin: number, limit: number, offset: number) =>
+    Math.max(
+      0,
+      Math.min(
+        limit,
+        origin + Math.max(-1, Math.min(1, offset)) * (offset < 0 ? origin : limit - origin),
+      ),
+    );
+  const sx = pan(base.x + (base.size - side) / 2, image.width - side, crop.x),
+    sy = pan(base.y + (base.size - side) / 2, image.height - side, crop.y);
   ctx.drawImage(image, sx, sy, side, side, 0, 0, size, size);
-  if (!processed) return;
+  if (!enhanced) return;
   const pixels = ctx.getImageData(0, 0, size, size),
     d = pixels.data;
+  applyAdjustment(d, analyzeAdjustment(d));
+  // Explicit manual option; background replacement is NOT part of auto-enhance.
   if (crop.white) {
     // Flood-fill only corner/edge-connected colors. Similar colors inside the subject stay intact.
     const refs = [0, size - 1, size * (size - 1), size * size - 1].map((p) => [
@@ -78,29 +142,9 @@ export function drawCrop(
       if (y < size - 1) push(p + size);
     }
   }
-  let low = 0,
-    high = 255;
-  if (crop.auto) {
-    const hist = new Uint32Array(256);
-    for (let i = 0; i < d.length; i += 4)
-      hist[Math.round(0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2])]++;
-    let sum = 0;
-    for (let i = 0; i < 256; i++) {
-      sum += hist[i];
-      if (sum < size * size * 0.01) low = i;
-      if (sum < size * size * 0.99) high = i;
-    }
-    if (high - low < 80) {
-      low = 0;
-      high = 255;
-    }
+  if (crop.brightness !== 1) {
+    for (let i = 0; i < d.length; i += 4) for (let c = 0; c < 3; c++) d[i + c] *= crop.brightness;
   }
-  for (let i = 0; i < d.length; i += 4)
-    for (let c = 0; c < 3; c++)
-      d[i + c] = Math.max(
-        0,
-        Math.min(255, (((d[i + c] - low) * 255) / Math.max(1, high - low)) * crop.brightness),
-      );
   ctx.putImageData(pixels, 0, 0);
 }
 export async function jpeg(canvas: HTMLCanvasElement): Promise<Blob> {

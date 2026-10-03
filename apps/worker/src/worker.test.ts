@@ -121,6 +121,75 @@ describe("local D1 API", () => {
     expect((await read()).updated_at).toBe(3);
     await db.prepare("DELETE FROM events WHERE item_id=?").bind(itemId).run();
   });
+  it("replaces photo bytes in place without XP or retake events", async () => {
+    const itemId = crypto.randomUUID(),
+      photoId = crypto.randomUUID();
+    await request("/items", "POST", { id: itemId, category: "phone" });
+    await request(`/items/${itemId}/photos/${crypto.randomUUID()}`, "POST", image);
+    await request(`/items/${itemId}/photos/${photoId}`, "POST", image);
+    const metadata = () =>
+      db
+        .prepare("SELECT id,item_id,position,created_at FROM photos WHERE id=?")
+        .bind(photoId)
+        .first();
+    const before = await metadata();
+    const events = await getEvents(db);
+    const replacement = new Uint8Array(image);
+    replacement[8] = replacement[10] = 2;
+    await db.prepare("UPDATE items SET updated_at=1 WHERE id=?").bind(itemId).run();
+    const version = await db.prepare("SELECT version FROM items WHERE id=?").bind(itemId).first();
+    expect((await request(`/items/${itemId}/photos/${photoId}`, "PUT", replacement)).status).toBe(
+      200,
+    );
+    expect(await metadata()).toEqual(before);
+    expect(new Uint8Array(await (await request(`/photos/${photoId}`)).arrayBuffer())).toEqual(
+      replacement,
+    );
+    expect(await getEvents(db)).toEqual(events);
+    expect(await db.prepare("SELECT version FROM items WHERE id=?").bind(itemId).first()).toEqual(
+      version,
+    );
+    expect(
+      (
+        await db
+          .prepare("SELECT updated_at FROM items WHERE id=?")
+          .bind(itemId)
+          .first<{ updated_at: number }>()
+      )?.updated_at,
+    ).toBeGreaterThan(1);
+    await db.prepare("DELETE FROM events WHERE item_id=?").bind(itemId).run();
+  });
+  it("rejects invalid replacement JPEGs and photos belonging to another item", async () => {
+    const itemId = crypto.randomUUID(),
+      otherId = crypto.randomUUID(),
+      photoId = crypto.randomUUID();
+    for (const id of [itemId, otherId]) await request("/items", "POST", { id, category: "phone" });
+    await request(`/items/${itemId}/photos/${photoId}`, "POST", image);
+    const rectangle = new Uint8Array(image);
+    rectangle[10] = 2;
+    const large = new Uint8Array(image);
+    large[7] = large[9] = 4;
+    large[8] = large[10] = 57;
+    const zero = new Uint8Array(image);
+    zero[8] = zero[10] = 0;
+    const oversized = new Uint8Array(307201);
+    oversized.set(image);
+    for (const invalid of [new Uint8Array([1, 2, 3]), rectangle, large, zero, oversized]) {
+      const response = await request(`/items/${itemId}/photos/${photoId}`, "PUT", invalid);
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: "apiError14" });
+    }
+    for (const path of [
+      `/items/${otherId}/photos/${photoId}`,
+      `/items/${itemId}/photos/${crypto.randomUUID()}`,
+      `/items/${crypto.randomUUID()}/photos/${photoId}`,
+    ])
+      expect((await request(path, "PUT", image)).status).toBe(404);
+    expect(new Uint8Array(await (await request(`/photos/${photoId}`)).arrayBuffer())).toEqual(
+      image,
+    );
+    await db.prepare("DELETE FROM events WHERE item_id=?").bind(itemId).run();
+  });
   it("autosaves with fresh operation keys award each answer once and never finish text", async () => {
     const itemId = crypto.randomUUID();
     await request("/items", "POST", { id: itemId, category: "phone" });

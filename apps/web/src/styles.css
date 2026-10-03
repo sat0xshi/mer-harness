@@ -1404,3 +1404,14 @@ input[type="radio"] {
 .feedback-clip {
   overflow-x: clip;
 }
+
+.crop-controls {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+.photo-enhance {
+  font-size: 0.8rem;
+  margin: 0.3rem 0;
+}

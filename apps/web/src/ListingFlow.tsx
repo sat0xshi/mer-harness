@@ -10,7 +10,7 @@ import {
   platforms,
   prices,
 } from "@mer/core";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { api } from "./api";
 import { CropEditor } from "./CropEditor";
 import { celebrate } from "./celebrate";
@@ -21,6 +21,14 @@ import { categories, platformQuestions } from "./i18n/models";
 import { screenshotJpeg } from "./image";
 import { isCustomText, listingText, switchPlatform } from "./listingText";
 import { browserStorage } from "./localPrefs";
+import {
+  deletePhotoOriginal,
+  getPhotoOriginal,
+  loadPhotoOriginals,
+  originalsVersion,
+  setPhotoOriginal,
+  subscribeOriginals,
+} from "./photoOriginals";
 import { unlockAudio } from "./sound";
 import { userKeyHeaders } from "./userKey";
 export const yen = formatCurrency;
@@ -39,6 +47,10 @@ export function ListingFlow({
   onExit: () => void;
   onListed: (item: Item) => Promise<void>;
 }) {
+  const originalsRevision = useSyncExternalStore(subscribeOriginals, originalsVersion);
+  useEffect(() => {
+    void loadPhotoOriginals();
+  }, []);
   const draftKey = `harness:listing-ai:${initial.id}`;
   const [draftSource, setDraftSource] = useState(
     () => draftStorage.getItem(draftKey) || "template",
@@ -357,15 +369,21 @@ export function ListingFlow({
                 photoId.current = crypto.randomUUID();
                 setFiles(files.slice(1));
               }}
-              onSave={async (blob) => {
+              onSave={async ({ upload, original, enhanced }) => {
                 await api(`/items/${item.id}/photos/${photoId.current}`, {
                   method: "POST",
-                  body: blob,
+                  body: upload,
                 });
-                photoId.current = crypto.randomUUID();
+                if (original)
+                  await setPhotoOriginal(photoId.current, {
+                    original,
+                    enhancedBlob: upload,
+                    enhanced,
+                  });
                 const state = await api<{ items: Item[] }>("/state");
                 const updated = state.items.find((i) => i.id === item.id);
                 if (updated) queue.photos(updated.photos, updated.updated_at);
+                photoId.current = crypto.randomUUID();
                 setFiles(files.slice(1));
                 await onRefresh();
                 celebrate("photo", t("photoComplete"));
@@ -394,13 +412,48 @@ export function ListingFlow({
           <div className="photo-grid">
             {item.photos.map((p, i) => (
               <div key={p.id}>
-                <img src={`/api/photos/${p.id}`} alt={t("productPhoto", { v0: i + 1 })} />
+                <img
+                  src={`/api/photos/${p.id}?v=${item.updated_at}-${originalsRevision}`}
+                  alt={t("productPhoto", { v0: i + 1 })}
+                />
+                {getPhotoOriginal(p.id) && (
+                  <label className="photo-enhance check">
+                    <input
+                      type="checkbox"
+                      role="switch"
+                      aria-checked={getPhotoOriginal(p.id)?.enhanced ?? false}
+                      disabled={busy || !!files.length}
+                      checked={getPhotoOriginal(p.id)?.enhanced ?? false}
+                      onChange={(e) => {
+                        const enhanced = e.target.checked;
+                        void action(async () => {
+                          const stored = getPhotoOriginal(p.id);
+                          if (!stored) return;
+                          await api(`/items/${item.id}/photos/${p.id}`, {
+                            method: "PUT",
+                            body: enhanced ? stored.enhancedBlob : stored.original,
+                          });
+                          await setPhotoOriginal(p.id, { ...stored, enhanced });
+                          const state = await api<{ items: Item[] }>("/state");
+                          const updated = state.items.find((i) => i.id === item.id);
+                          if (updated) queue.photos(updated.photos, updated.updated_at);
+                          await onRefresh();
+                        });
+                      }}
+                    />
+                    {t("photoEnhance")}
+                  </label>
+                )}
                 <button
+                  disabled={busy || !!files.length}
                   aria-label={t("deletePhoto", { v0: i + 1 })}
                   onClick={() =>
                     action(async () => {
                       await api(`/items/${item.id}/photos/${p.id}`, { method: "DELETE" });
-                      queue.photos(queue.item.photos.filter((x) => x.id !== p.id));
+                      await deletePhotoOriginal(p.id);
+                      const state = await api<{ items: Item[] }>("/state");
+                      const updated = state.items.find((i) => i.id === item.id);
+                      if (updated) queue.photos(updated.photos, updated.updated_at);
                       await onRefresh();
                     })
                   }
