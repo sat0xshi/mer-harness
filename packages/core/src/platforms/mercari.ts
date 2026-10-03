@@ -1,14 +1,14 @@
 import type { PlatformConfig } from "./types";
 export const mercari: PlatformConfig = {
   id: "mercari",
-  name: "メルカリ",
+  name: "フリマ",
   feeRate: 10,
   locale: "ja-JP",
   currency: "JPY",
   currencyLabel: "円",
   limits: { title: 40, description: 1000, minPrice: 300, maxPrice: 9999999 },
   defaultShipping: 750,
-  shippingMethods: ["らくらくメルカリ便", "ゆうゆうメルカリ便", "未定"],
+  shippingMethods: ["匿名配送（ヤマト）", "匿名配送（日本郵便）", "未定"],
   shippingTable: [
     { name: "薄手衣類の目安", cost: 230, note: "梱包後の厚み・専用資材費を確認" },
     { name: "小型ガジェットの目安", cost: 520, note: "専用資材を含む仮の見積り" },
@@ -62,9 +62,9 @@ export const mercari: PlatformConfig = {
   soldSearchUrl: (keyword) =>
     `https://jp.mercari.com/search?keyword=${encodeURIComponent(keyword)}&status=sold_out`,
   searchHint: "売り切れた同じ品を見て、相場をメモしよう。",
-  searchLabel: "メルカリの売り切れ検索を開く ↗",
-  listingHint: "メルカリで内容を確認して、出品しよう。",
-  openLabel: "メルカリを開く ↗",
+  searchLabel: "フリマの売り切れ検索を開く ↗",
+  listingHint: "フリマアプリで内容を確認して、出品しよう。",
+  openLabel: "フリマアプリを開く ↗",
   sellUrl: "https://jp.mercari.com/sell",
 };
 

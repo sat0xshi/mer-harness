@@ -154,7 +154,8 @@ export default function App() {
             if (!editing) setPage("home");
           }}
         >
-          H<span className="logo-buckle">a</span>rness<span className="brand-sub">MER HARNESS</span>
+          H<span className="logo-buckle">a</span>rness
+          <span className="brand-sub">{t("appName")}</span>
         </a>
         <div className="header-tools">
           <button
