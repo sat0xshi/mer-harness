@@ -1,29 +1,25 @@
-import { formatCurrency } from "@mer/core";
-import { useEffect, useRef, useState } from "react";
+import {
+  effectConfig,
+  type effectTier,
+  formatCurrency,
+  celebrationHaptics as haptics,
+  celebrationPriority as priority,
+  celebrationSounds as sounds,
+} from "@mer/core";
+import { type CSSProperties, useEffect, useRef, useState } from "react";
 import type { Settings } from "./api";
 import {
   createBurst,
   desktopFeedback,
+  effectProfile,
   particleCount,
   saleAmount,
   shouldVibrate,
   stepParticles,
-  viewportScale,
 } from "./confetti";
 import { t } from "./i18n/ja";
-import { playSound, type Sound } from "./sound";
-export type CelebrationType =
-  | "answer"
-  | "photo"
-  | "copy"
-  | "listed"
-  | "sold"
-  | "shipped"
-  | "levelup"
-  | "streak"
-  | "combo"
-  | "badge"
-  | "buckle";
+import { playSound } from "./sound";
+export type CelebrationType = keyof typeof effectTier;
 interface Celebration {
   type: CelebrationType;
   text: string;
@@ -34,45 +30,6 @@ const bus = new EventTarget();
 export function celebrate(type: CelebrationType, text: string, n?: number) {
   bus.dispatchEvent(new CustomEvent("celebrate", { detail: { type, text, n, time: Date.now() } }));
 }
-const priority: Record<CelebrationType, number> = {
-  levelup: 9,
-  badge: 8,
-  sold: 7,
-  shipped: 6,
-  listed: 5,
-  combo: 3,
-  streak: 2,
-  photo: 1,
-  answer: 0,
-  copy: 0,
-  buckle: 0,
-};
-const sounds: Record<CelebrationType, Sound> = {
-  levelup: "levelup",
-  badge: "levelup",
-  sold: "sold",
-  shipped: "ship",
-  listed: "pikon",
-  combo: "combo",
-  streak: "streak",
-  photo: "check",
-  answer: "tap",
-  copy: "check",
-  buckle: "buckle",
-};
-const haptics: Record<CelebrationType, number[]> = {
-  answer: [10],
-  photo: [10],
-  copy: [12, 40, 12],
-  buckle: [8, 30, 20],
-  listed: [15, 50, 25],
-  shipped: [15, 40, 15, 40, 60],
-  sold: [15, 50, 15, 50, 30],
-  levelup: [20, 40, 20, 40, 20, 40, 120],
-  badge: [20, 40, 20],
-  streak: [25, 80, 25],
-  combo: [10, 30, 10],
-};
 export function CelebrationHost({ settings, onAsk }: { settings: Settings; onAsk: () => void }) {
   const [reducedMotion, setReducedMotion] = useState(
     () => matchMedia("(prefers-reduced-motion: reduce)").matches,
@@ -85,8 +42,7 @@ export function CelebrationHost({ settings, onAsk }: { settings: Settings; onAsk
     config = useRef(settings),
     ask = useRef(onAsk),
     asked = useRef(false),
-    skip = useRef<() => void>(() => {}),
-    last = useRef<Record<string, number>>({});
+    skip = useRef<() => void>(() => {});
   config.current = settings;
   ask.current = onAsk;
   useEffect(() => {
@@ -120,7 +76,7 @@ export function CelebrationHost({ settings, onAsk }: { settings: Settings; onAsk
         ask.current();
       }
       // Queued feedback may be visual, but stale/background events must never make sound.
-      if (Date.now() - e.time < 900) {
+      if (Date.now() - e.time < effectConfig.staleSoundMs) {
         const feedback = desktopFeedback({
           canVibrate: "vibrate" in navigator,
           coarsePointer: matchMedia("(pointer: coarse)").matches,
@@ -142,10 +98,7 @@ export function CelebrationHost({ settings, onAsk }: { settings: Settings; onAsk
           );
         }
       }
-      timer = setTimeout(
-        finish,
-        e.type === "listed" || e.type === "sold" ? 2800 : priority[e.type] >= 5 ? 2000 : 700,
-      );
+      timer = setTimeout(finish, effectProfile(e.type, config.current.fx).durationMs);
     };
     const finish = () => {
       clearTimeout(timer);
@@ -157,7 +110,7 @@ export function CelebrationHost({ settings, onAsk }: { settings: Settings; onAsk
     skip.current = finish;
     const listener = (event: Event) => {
       queue.current.push((event as CustomEvent<Celebration>).detail);
-      if (queue.current.length > 12) queue.current.shift();
+      if (queue.current.length > effectConfig.maxQueue) queue.current.shift();
       next();
     };
     const keydown = (event: KeyboardEvent) => {
@@ -189,35 +142,15 @@ export function CelebrationHost({ settings, onAsk }: { settings: Settings; onAsk
     const cv = canvas.current,
       ctx = cv.getContext("2d");
     if (!ctx) return;
-    // Apply the existing frequency caps before the vivid multiplier.
-    count = particleCount(active.type, t("fxNormal"), false);
-    if (active.type === "streak" && ![7, 30, 100].includes(active.n || 0)) count = 0;
-    if (active.type === "combo" && active.n !== 4) count = 0;
-    if (Date.now() - (last.current[active.type] || 0) < 10000) count = Math.min(60, count);
-    last.current[active.type] = Date.now();
-    if (count === 150) {
-      const key = `harness-burst:${new Date().toDateString()}`;
-      let bursts = 0;
-      try {
-        bursts = Number(localStorage.getItem(key) || 0);
-        localStorage.setItem(key, String(bursts + 1));
-      } catch {
-        /* Storage can be unavailable. */
-      }
-      if (bursts >= 3) count = 100;
-    }
-    if (settings.fx === t("fxVivid"))
-      count = Math.min(particleCount(active.type, settings.fx, false), Math.round(count * 1.2));
-    if (!count) return;
     let viewport = { width: innerWidth, height: innerHeight };
-    count = Math.min(900, Math.round(count * viewportScale(viewport.width, viewport.height).count));
+    count = particleCount(active.type, settings.fx, false, viewport);
     let particles = createBurst({ ...viewport, count, type: active.type }, Math.random);
     let frame = 0,
       previous = performance.now(),
       drops = 0,
       stopped = false;
     const start = previous;
-    const duration = active.type === "listed" || active.type === "sold" ? 2800 : 2400;
+    const duration = effectProfile(active.type, settings.fx).durationMs;
     const clear = () => {
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.clearRect(0, 0, cv.width, cv.height);
@@ -308,41 +241,58 @@ export function CelebrationHost({ settings, onAsk }: { settings: Settings; onAsk
     reducedMotion,
     sound: settings.sound,
   });
-  const major = active?.type === "listed" || active?.type === "sold";
+  const major =
+    active?.type === "listed" || active?.type === "sold" || active?.type === "bossDefeat";
+  const profile = effectProfile(active?.type ?? "answer", settings.fx);
   useEffect(() => {
     if (!active || !major || !feedback.shake || document.hidden) return;
     const main = document.querySelector("main");
-    const className = active.type === "sold" ? "feedback-shake-sold" : "feedback-shake-listed";
+    const className = "feedback-shake-listed";
+    main?.style.setProperty("--shake-distance", `${profile.shakePx}px`);
     main?.classList.add(className);
     main?.parentElement?.classList.add("feedback-clip");
     const cleanup = () => {
+      main?.style.removeProperty("--shake-distance");
       main?.classList.remove(className);
       main?.parentElement?.classList.remove("feedback-clip");
     };
-    const timer = setTimeout(cleanup, 300);
+    const timer = setTimeout(cleanup, effectConfig.shakeDurationMs);
     return () => {
       clearTimeout(timer);
       cleanup();
     };
-  }, [active, major, feedback.shake]);
-  const amount = active?.type === "sold" ? saleAmount(active.n) : undefined;
-  const big =
-    (active?.type === "listed" || active?.type === "sold") &&
-    settings.fx !== t("fxOff") &&
-    settings.fx !== t("fxSubtle");
+  }, [active, major, feedback.shake, profile.shakePx]);
+  const amount =
+    active?.type === "sold" || active?.type === "bossDefeat" ? saleAmount(active.n) : undefined;
+  const big = major && settings.fx !== t("fxOff") && settings.fx !== t("fxSubtle");
   return (
     <>
       {active && major && feedback.flash && !document.hidden && (
         <div
           key={`flash:${active.time}:${active.type}`}
           className="feedback-flash"
-          data-sold={active.type === "sold"}
+          style={
+            {
+              "--flash-opacity": reducedMotion ? effectConfig.reducedFlash : profile.flash,
+            } as CSSProperties
+          }
           data-reduced-motion={reducedMotion}
           aria-hidden="true"
         />
       )}
       <canvas className="confetti" aria-hidden="true" tabIndex={-1} ref={canvas} />
-      <div className="celebration-region" data-big={big} role="status" aria-live="polite">
+      <div
+        className="celebration-region"
+        data-big={big}
+        role="status"
+        aria-live="polite"
+        style={
+          {
+            "--celebration-duration": `${profile.durationMs}ms`,
+            "--text-scale": profile.textScale,
+          } as CSSProperties
+        }
+      >
         {active && (
           <button
             key={`${active.time}:${active.type}`}
@@ -350,6 +300,9 @@ export function CelebrationHost({ settings, onAsk }: { settings: Settings; onAsk
             data-reduced-motion={reducedMotion}
             onClick={() => skip.current()}
           >
+            {active.type === "bossDefeat" && (
+              <strong className="boss-defeat-label">{t("bossDefeated")}</strong>
+            )}
             {active.text}
             {amount !== undefined && <strong className="sales">{formatCurrency(amount)}</strong>}
             <small>{t("dismissCelebration")}</small>

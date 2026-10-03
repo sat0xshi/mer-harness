@@ -124,8 +124,8 @@ describe("game rules", () => {
     events[1].meta.complete = false;
     expect(combo(events, 1202000).count).toBe(1);
   });
-  it("has ten explicit badges and sums recorded XP", () => {
-    expect(badges).toHaveLength(10);
+  it("has the extended explicit badges and sums recorded XP", () => {
+    expect(badges).toHaveLength(17);
     const events = [
       event("2026-10-01", "listed"),
       { ...event("2026-10-01", "sold"), xp: 80, meta: { price: 195000 } },

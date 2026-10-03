@@ -1,11 +1,17 @@
 import {
+  bossFor,
   buildListing,
+  calendar,
+  caps,
   charCount,
   combo,
+  comboMultiplier,
   copyBoosters,
   type GameEvent,
+  gameRules,
   gameSummary,
   getPlatform,
+  jstDay,
   localDay,
   questions,
   streakMilestones,
@@ -26,7 +32,14 @@ import {
   sessionCookie,
   verifyGoogle,
 } from "./auth";
-import { decodeItem, eventStatement, getEvents, getItem, type ItemRow } from "./data";
+import {
+  cappedActionStatement,
+  decodeItem,
+  eventStatement,
+  getEvents,
+  getItem,
+  type ItemRow,
+} from "./data";
 import {
   buildGeminiRequest,
   DEFAULT_GEMINI_MODEL,
@@ -111,7 +124,8 @@ async function day(db: D1Database, now: number) {
 async function awards(db: D1Database, now: number) {
   const events = await getEvents(db),
     today = await day(db, now),
-    summary = gameSummary(events, today, now);
+    rows = await db.prepare("SELECT * FROM items").all<ItemRow>(),
+    summary = gameSummary(events, today, now, rows.results.map(decodeItem));
   const additions: ReturnType<typeof eventStatement>[] = [];
   for (const badge of summary.unlocked)
     additions.push(
@@ -119,12 +133,25 @@ async function awards(db: D1Database, now: number) {
         key: `badge:${badge}`,
         type: "badge",
         item_id: null,
-        xp: 100,
+        xp: XP.badge,
         created_at: now,
         day: today,
         meta: { badge },
       }),
     );
+  for (const quest of summary.quests)
+    if (quest.done)
+      additions.push(
+        eventStatement(db, {
+          key: `quest:${jstDay(now)}:${quest.id}`,
+          type: "quest",
+          item_id: null,
+          xp: quest.rewardXp,
+          created_at: now,
+          day: jstDay(now),
+          meta: { quest: quest.id },
+        }),
+      );
   for (const [length, xp] of Object.entries(streakMilestones))
     if (summary.streak.best >= Number(length))
       additions.push(
@@ -158,7 +185,7 @@ app.get("/api/state", async (c) => {
   return c.json({
     items,
     events,
-    game: gameSummary(events, await day(c.env.DB, now), now),
+    game: gameSummary(events, await day(c.env.DB, now), now, items),
     settings: await settings(c.env.DB),
     listingAiEnabled: !!c.env.GEMINI_API_KEY?.trim(),
     aiEnabled: c.env.AI_ENABLED === "1" && !!c.env.AI,
@@ -258,10 +285,40 @@ app.put("/api/items/:id", async (c) => {
       ),
     );
   for (const q of questions[input.category])
-    if (input.answers[q.key]?.trim()) add("answer", `answer:${q.key}`, 5);
+    if (input.answers[q.key]?.trim()) add("answer", `answer:${q.key}`, XP.answer);
   if (input.finish && title.trim() && description.trim())
-    add("text", "text", listing.complete ? 20 : 10, { complete: listing.complete });
-  if (input.price >= platform.limits.minPrice) add("price", "price", 10);
+    add("text", "text", listing.complete ? XP.text : gameRules.incompleteTextXp, {
+      complete: listing.complete,
+    });
+  if (input.price >= platform.limits.minPrice) add("price", "price", XP.price);
+  // Ignore half-typed autosaves below the platform floor (e.g. "9" while typing "900").
+  if (
+    ["listed", "shelf"].includes(old.status) &&
+    input.price >= Math.max(1, platform.limits.minPrice) &&
+    input.price < old.price
+  ) {
+    const events = await getEvents(db);
+    const boss = bossFor(old, events, now);
+    const from = Date.parse(`${jstDay(now)}T00:00:00+09:00`);
+    statements.push(
+      cappedActionStatement(
+        db,
+        {
+          key: `price_drop:${id}:${old.version + 1}`,
+          type: "price_drop",
+          item_id: id,
+          xp: XP.price_drop,
+          created_at: now,
+          day: today,
+          meta: { from: old.price, to: input.price, boss: !!boss && !boss.defeated },
+        },
+        caps.priceDropPerItemDay,
+        from,
+        from + calendar.dayMs,
+        key,
+      ),
+    );
+  }
   const result = await db.batch(statements);
   if (!result[1].meta.changes) return c.json({ error: "apiError10" }, 409);
   await awards(db, now);
@@ -300,7 +357,7 @@ app.post("/api/items/:id/status", async (c) => {
     if (before.version + 1 !== old.version) return c.json({ error: "apiError13" }, 409);
     next = { ...before };
   } else {
-    if (input.status === "listed") next.listed_at = now;
+    if (input.status === "listed" && old.status !== "listed") next.listed_at = now;
     if (["draft", "listed", "shelf"].includes(input.status)) {
       next.sold_at = null;
       next.sold_price = 0;
@@ -337,6 +394,7 @@ app.post("/api/items/:id/status", async (c) => {
         key,
       ),
   ];
+  let bossDefeated = false;
   if (!input.undo && old.status !== next.status) {
     const type: GameEvent["type"] | undefined =
       next.status === "listed"
@@ -350,15 +408,37 @@ app.post("/api/items/:id/status", async (c) => {
       const complete = buildListing(old.category, old.answers, old.platform).complete;
       const events = await getEvents(db);
       const n = combo(events, now).count + 1;
-      const multiplier = complete ? [1, 1, 1.2, 1.5, 2][Math.min(n, 4)] : 1;
+      const multiplier = complete ? comboMultiplier(n) : 1;
+      const prior = events.some((e) => e.item_id === id && e.type === type);
+      // Preserve earned XP while recording every subsequent listing for JST progress/history.
+      const eventKey =
+        type !== "sold" && prior ? `${id}:${type}:${old.version + 1}` : `${id}:${type}`;
+      const boss = type === "sold" ? bossFor(old, events, now) : null;
+      bossDefeated = !!boss && !boss.defeated && !events.some((e) => e.key === `boss:${id}`);
+      if (bossDefeated && boss)
+        statements.push(
+          eventStatement(
+            db,
+            {
+              key: `boss:${id}`,
+              type: "boss",
+              item_id: id,
+              xp: XP.boss,
+              created_at: now,
+              day: jstDay(now),
+              meta: { daysListed: boss.daysListed },
+            },
+            key,
+          ),
+        );
       statements.push(
         eventStatement(
           db,
           {
-            key: `${id}:${type}`,
+            key: eventKey,
             type,
             item_id: id,
-            xp: type === "listed" ? Math.round(50 * multiplier) : XP[type as keyof typeof XP],
+            xp: prior ? 0 : type === "listed" ? Math.round(XP.listed * multiplier) : XP[type],
             created_at: now,
             day: today,
             meta: { complete, price: next.sold_price, combo: complete ? n : 0 },
@@ -404,7 +484,7 @@ app.post("/api/items/:id/status", async (c) => {
           key: `${id}:shipped`,
           type: "shipped",
           item_id: id,
-          xp: 60,
+          xp: XP.shipped,
           created_at: now,
           day: today,
           meta: { checked: false },
@@ -415,13 +495,14 @@ app.post("/api/items/:id/status", async (c) => {
   const result = await db.batch(statements);
   if (!result[1].meta.changes) return c.json({ error: "apiError10" }, 409);
   await awards(db, now);
-  return c.json({ item: await getItem(db, id), key });
+  return c.json({ item: await getItem(db, id), key, bossDefeated });
 });
 app.post("/api/items/:id/photos/:photoId", async (c) => {
   const db = c.env.DB,
     id = c.req.param("id"),
     photoId = z.string().uuid().parse(c.req.param("photoId"));
-  if (!(await getItem(db, id))) return c.json({ error: "apiError8" }, 404);
+  const item = await getItem(db, id);
+  if (!item) return c.json({ error: "apiError8" }, 404);
   if (await db.prepare("SELECT id FROM photos WHERE id=? AND item_id=?").bind(photoId, id).first())
     return c.json({ ok: true });
   const bytes = new Uint8Array(await c.req.arrayBuffer()),
@@ -436,6 +517,9 @@ app.post("/api/items/:id/photos/:photoId", async (c) => {
     return c.json({ error: "apiError14" }, 400);
   const now = Date.now(),
     today = await day(db, now);
+  const events = await getEvents(db);
+  const boss = bossFor(item, events, now);
+  const from = Date.parse(`${jstDay(now)}T00:00:00+09:00`);
   try {
     await db.batch([
       db
@@ -446,9 +530,33 @@ app.post("/api/items/:id/photos/:photoId", async (c) => {
       db.prepare("UPDATE items SET updated_at=? WHERE id=?").bind(now, id),
       db
         .prepare(
-          "INSERT OR IGNORE INTO events(id,key,type,item_id,xp,meta_json,day,created_at) SELECT ?,?,'photo',?,CASE WHEN (SELECT count(*) FROM events WHERE item_id=? AND type='photo')<6 THEN 3 ELSE 0 END,'{}',?,?",
+          "INSERT OR IGNORE INTO events(id,key,type,item_id,xp,meta_json,day,created_at) SELECT ?,?,'photo',?,CASE WHEN (SELECT count(*) FROM events WHERE item_id=? AND type='photo')<? THEN ? ELSE 0 END,'{}',?,?",
         )
-        .bind(crypto.randomUUID(), `photo:${photoId}`, id, id, today, now),
+        .bind(
+          crypto.randomUUID(),
+          `photo:${photoId}`,
+          id,
+          id,
+          caps.photoPerItem,
+          XP.photo,
+          today,
+          now,
+        ),
+      cappedActionStatement(
+        db,
+        {
+          key: `retake:${photoId}`,
+          type: "retake",
+          item_id: id,
+          xp: XP.retake,
+          created_at: now,
+          day: today,
+          meta: { boss: !!boss && !boss.defeated },
+        },
+        caps.retakePerItemDay,
+        from,
+        from + calendar.dayMs,
+      ),
     ]);
   } catch {
     return c.json({ error: "apiError15" }, 409);
@@ -486,7 +594,7 @@ app.delete("/api/items/:id/photos/:photoId", async (c) => {
 app.post("/api/rest", async (c) => {
   const now = Date.now(),
     today = await day(c.env.DB, now),
-    week = Math.floor(Date.parse(today) / 604800000);
+    week = Math.floor(Date.parse(today) / (calendar.dayMs * calendar.weekDays));
   await eventStatement(c.env.DB, {
     key: `rest:${week}`,
     type: "rest",

@@ -1,12 +1,30 @@
+import { effectConfig, effectTier } from "@mer/core";
 import type { Settings } from "./api";
 import type { CelebrationType } from "./celebrate";
 import { t } from "./i18n/ja";
 
 export function viewportScale(width: number, height: number) {
-  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 480 || height <= 0)
+  if (
+    !Number.isFinite(width) ||
+    !Number.isFinite(height) ||
+    width <= effectConfig.viewport.phoneWidth ||
+    height <= 0
+  )
     return { count: 1, size: 1 };
-  const count = Math.max(1, Math.min(2.2, Math.sqrt((width * height) / (480 * 900))));
-  return { count, size: 1 + ((count - 1) / 1.2) * 0.5 };
+  const count = Math.max(
+    1,
+    Math.min(
+      effectConfig.viewport.maxScale,
+      Math.sqrt(
+        (width * height) /
+          (effectConfig.viewport.phoneWidth * effectConfig.viewport.referenceHeight),
+      ),
+    ),
+  );
+  return {
+    count,
+    size: 1 + ((count - 1) / (effectConfig.viewport.maxScale - 1)) * effectConfig.viewport.sizeGain,
+  };
 }
 export function desktopFeedback(environment: {
   canVibrate: boolean;
@@ -26,27 +44,31 @@ export function particleCount(
   viewport?: Viewport,
 ) {
   if (reducedMotion || fx === t("fxOff") || fx === t("fxSubtle")) return 0;
-  const count = {
-    listed: 240,
-    sold: 320,
-    shipped: 80,
-    levelup: 150,
-    badge: 150,
-    streak: 50,
-    combo: 30,
-    answer: 0,
-    photo: 0,
-    copy: 0,
-    buckle: 0,
-  }[type];
-  const base =
-    fx === t("fxVivid")
-      ? Math.min(type === "listed" || type === "sold" ? 400 : 150, Math.round(count * 1.2))
-      : count;
+  const profile = effectProfile(type, fx);
   return Math.min(
-    900,
-    Math.round(base * (viewport ? viewportScale(viewport.width, viewport.height).count : 1)),
+    effectConfig.maxParticles,
+    Math.round(
+      profile.particles * (viewport ? viewportScale(viewport.width, viewport.height).count : 1),
+    ),
   );
+}
+
+export function effectProfile(type: CelebrationType, fx: Settings["fx"]) {
+  const tier = effectTier[type];
+  const profile = effectConfig.tiers[Math.max(0, tier)];
+  const enabled = fx === t("fxNormal") || fx === t("fxVivid");
+  return {
+    ...profile,
+    particles:
+      enabled && tier >= 0
+        ? Math.round(profile.particles * (fx === t("fxVivid") ? effectConfig.vividMultiplier : 1))
+        : 0,
+    durationMs: tier < 0 ? effectConfig.minorDurationMs : profile.durationMs,
+    shakePx: enabled
+      ? profile.shakePx * (fx === t("fxVivid") ? effectConfig.vividMultiplier : 1)
+      : 0,
+    flash: enabled ? profile.flash : 0,
+  };
 }
 
 export function shouldVibrate(
@@ -93,9 +115,9 @@ export function createBurst(
   rng: () => number,
 ): Particle[] {
   const { width, height, count, type } = config;
-  const wide = type === "listed" || type === "sold";
-  const colors = ["#F5B301", "#3B4BD8", "#00B8A9", "#FF8FB1", "#FFFFFF"];
-  const shapes = ["circle", "rectangle", "ribbon", "star"] as const;
+  const wide = type === "listed" || type === "sold" || type === "bossDefeat";
+  const colors = effectConfig.colors;
+  const shapes = effectConfig.shapes;
   return Array.from({ length: count }, (_, i) => {
     const source = i % 3;
     const shower = wide && source === 2;
@@ -115,7 +137,9 @@ export function createBurst(
       color: colors[Math.floor(rng() * colors.length)],
       shape: shapes[Math.floor(rng() * shapes.length)],
       age: 0,
-      lifetime: 2 + rng() * 0.5,
+      lifetime:
+        (effectProfile(type, t("fxNormal")).durationMs - effectConfig.particleTailMs) / 1000 -
+        rng() * effectConfig.particleLifetimeVariation,
       delay: shower ? rng() * 0.3 : type === "sold" && i % 2 ? 0.25 : 0,
       opacity: 1,
     };

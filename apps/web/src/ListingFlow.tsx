@@ -58,6 +58,12 @@ export function ListingFlow({
     [compSold, setCompSold] = useState(true),
     [copied, setCopied] = useState<string[]>([]),
     [ai, setAi] = useState<Record<string, unknown> | null>(null);
+  const refreshedVersion = useRef(initial.version);
+  useEffect(() => {
+    if (item.version === refreshedVersion.current) return;
+    refreshedVersion.current = item.version;
+    void onRefresh().catch((error) => setError((error as Error).message));
+  }, [item.version, onRefresh]);
   const busy = actionBusy || draftBusy;
   useEffect(() => {
     window.scrollTo(0, 0);

@@ -1,4 +1,16 @@
-import { buildListing, combo, defaultPlatform, type Item, type Status } from "@mer/core";
+import {
+  bossConfig,
+  buildListing,
+  calendar,
+  defaultPlatform,
+  effectConfig,
+  gameRules,
+  gameSummary,
+  type Item,
+  jstDay,
+  localDay,
+  type Status,
+} from "@mer/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatedNumber } from "./AnimatedNumber";
 import { LogoutButton } from "./AuthGate";
@@ -14,6 +26,7 @@ import {
   resumedDraft,
   startDraft,
 } from "./drafts";
+import { BossCards, type BossHit, ListingStreak, QuestCard, WeeklyCard } from "./GameCards";
 import { t } from "./i18n/ja";
 import { badges } from "./i18n/models";
 import { ListingFlow, yen } from "./ListingFlow";
@@ -45,31 +58,83 @@ export default function App() {
     setLocalPrefs(chosen);
     setAsk(false);
   }
+  const [hit, setHit] = useState<BossHit | null>(null);
+  useEffect(() => {
+    if (!hit) return;
+    const timer = setTimeout(() => setHit(null), effectConfig.hitDurationMs);
+    return () => clearTimeout(timer);
+  }, [hit]);
   const [boardTab, setBoardTab] = useState<Status>("draft");
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 30000);
-    return () => clearInterval(timer);
+    let timer: ReturnType<typeof setTimeout>;
+    const schedule = () => {
+      const untilMidnight = calendar.dayMs - ((Date.now() + calendar.jstOffsetMs) % calendar.dayMs);
+      timer = setTimeout(
+        () => {
+          setNow(Date.now());
+          schedule();
+        },
+        Math.min(effectConfig.refreshMs, untilMidnight),
+      );
+    };
+    schedule();
+    return () => clearTimeout(timer);
   }, []);
   const lock = useRef(false),
-    last = useRef<State | null>(null);
+    last = useRef<State | null>(null),
+    refreshSequence = useRef(0);
   const refresh = useCallback(async () => {
+    const sequence = ++refreshSequence.current;
     const next = await api<State>("/state");
+    if (sequence !== refreshSequence.current) return;
     if (!next.settings) {
       await api("/settings", json(defaults, "PUT"));
       next.settings = defaults;
     }
+    if (sequence !== refreshSequence.current) return;
     if (!last.current) {
       setLocalPrefs(readLocalPrefs(browserStorage, next.settings));
       const resumed = resumedDraft(next.items);
       if (resumed) setEditing(rememberDraft(resumed));
     }
+    setNow(Date.now());
     setState(next);
     if (next.settings) setSettings(next.settings);
     if (last.current) {
       const previous = last.current.game;
       if (next.game.level > previous.level)
-        celebrate("levelup", t("celebrateLevel", { v0: next.game.level }));
+        celebrate(
+          "levelup",
+          next.game.title !== previous.title
+            ? t("celebrateTitle", { v0: next.game.level, v1: next.game.title })
+            : t("celebrateLevel", { v0: next.game.level }),
+        );
+      const oldEvents = new Set(last.current.events.map((event) => event.key));
+      const fresh = next.events.filter((event) => !oldEvents.has(event.key));
+      for (const event of fresh) {
+        if (event.type === "quest") {
+          const quest = next.game.quests.find((quest) => quest.id === event.meta.quest);
+          if (quest) celebrate("quest", t("questComplete", { v0: t(quest.label) }));
+        }
+      }
+      const attacks = fresh.filter(
+        (event) =>
+          (event.type === "price_drop" || event.type === "retake") && event.meta.boss === true,
+      );
+      const latestAttack = attacks.at(-1);
+      if (latestAttack?.item_id) {
+        const damage = attacks
+          .filter((event) => event.item_id === latestAttack.item_id)
+          .reduce(
+            (sum, event) =>
+              sum +
+              (event.type === "price_drop" ? bossConfig.priceDropDamage : bossConfig.retakeDamage),
+            0,
+          );
+        setHit({ itemId: latestAttack.item_id, damage, key: latestAttack.key });
+        celebrate("hit", t("bossDamage", { v0: damage }));
+      }
       for (const badge of next.game.unlocked)
         if (!previous.unlocked.includes(badge))
           celebrate("badge", t("celebrateBadge", { v0: badges.find((b) => b[0] === badge)?.[1] }));
@@ -79,14 +144,14 @@ export default function App() {
           t("celebrateStreak", { v0: next.game.streak.current }),
           next.game.streak.current,
         );
-      if (next.game.combo.count >= 2 && next.game.combo.count > previous.combo.count)
+      if (
+        next.game.combo.count >= gameRules.comboCelebrateFrom &&
+        next.game.combo.count > previous.combo.count
+      )
         celebrate("combo", `×${next.game.combo.multiplier} COMBO`, next.game.combo.count);
     }
     last.current = next;
   }, []);
-  useEffect(() => {
-    void refresh().catch((e) => setError(e.message));
-  }, [refresh]);
   useEffect(() => {
     document.documentElement.dataset.theme = settings.theme;
     document.documentElement.dataset.fx = effective.fx;
@@ -129,13 +194,18 @@ export default function App() {
   }
   async function status(item: Item, to: Status, soldPrice?: number, shipped?: boolean) {
     await run(async () => {
-      const result = await api<{ item: Item; key: string }>(
+      const result = await api<{ item: Item; key: string; bossDefeated?: boolean }>(
         `/items/${item.id}/status`,
         json({ version: item.version, status: to, soldPrice, shipped }),
       );
       setUndo({ item: result.item, key: result.key });
       if (to === "listed") celebrate("listed", t("celebrateListed"));
-      if (to === "trading") celebrate("sold", t("celebrateSold"), soldPrice);
+      if (to === "trading")
+        celebrate(
+          result.bossDefeated ? "bossDefeat" : "sold",
+          t("celebrateSold"),
+          result.item.sold_price,
+        );
       if (shipped) celebrate("shipped", t("celebrateShipped"));
       await refresh();
     });
@@ -154,8 +224,18 @@ export default function App() {
     await refresh();
   }
   const game = state
-    ? { ...state.game, combo: combo(state.events, Math.max(now, Date.now())) }
+    ? gameSummary(state.events, localDay(now, settings.zone), now, state.items)
     : undefined;
+  const currentDay = jstDay(now);
+  useEffect(() => {
+    const update = () => {
+      setNow(Date.now());
+      void refresh().catch((e) => setError(e.message));
+    };
+    update();
+    window.addEventListener("focus", update);
+    return () => window.removeEventListener("focus", update);
+  }, [currentDay, refresh]);
   const next =
     state?.items.find((i) => i.status === "to_ship") ||
     pickNextDraft(state?.items || []) ||
@@ -206,18 +286,28 @@ export default function App() {
               <p>{t("loadingHint")}</p>
             </div>
           ) : editing ? (
-            <ListingFlow
-              key={editing.id}
-              initial={editing}
-              aiEnabled={state.aiEnabled}
-              listingAiEnabled={state.listingAiEnabled}
-              onRefresh={refresh}
-              onExit={() => {
-                draftStorage.removeItem(activeDraftKey);
-                setEditing(null);
-              }}
-              onListed={listed}
-            />
+            <>
+              {game && (
+                <BossCards
+                  bosses={game.bosses.filter((boss) => boss.itemId === editing.id)}
+                  items={state.items}
+                  settings={effective}
+                  hit={hit}
+                />
+              )}
+              <ListingFlow
+                key={editing.id}
+                initial={editing}
+                aiEnabled={state.aiEnabled}
+                listingAiEnabled={state.listingAiEnabled}
+                onRefresh={refresh}
+                onExit={() => {
+                  draftStorage.removeItem(activeDraftKey);
+                  setEditing(null);
+                }}
+                onListed={listed}
+              />
+            </>
           ) : (
             <>
               {page === "home" && game && (
@@ -230,6 +320,9 @@ export default function App() {
                       {t("welcomeSecond")}
                     </h1>
                     <p className="sub">{t("welcomeHint")}</p>
+                    <small>
+                      Lv.{game.level} {game.title}
+                    </small>
                     <div className="strap-art" aria-hidden="true">
                       <span />
                       <i />
@@ -238,23 +331,9 @@ export default function App() {
                   <section className="card level-card">
                     <div className="section-heading">
                       <strong className="level">
-                        Lv.{game.level}{" "}
-                        <small>
-                          {game.level >= 30
-                            ? t("rankRider")
-                            : game.level >= 20
-                              ? t("rankMaster")
-                              : game.level >= 10
-                                ? t("rankArtisan")
-                                : game.level >= 5
-                                  ? t("rankBelt")
-                                  : t("rankApprentice")}
-                        </small>
+                        Lv.{game.level} <small>{game.title}</small>
                       </strong>
-                      <span className="streak">
-                        {game.streak.current}
-                        {t("daySuffix")}
-                      </span>
+                      <ListingStreak streak={game.listingStreak} />
                     </div>
                     <progress
                       className="xp"
@@ -272,6 +351,15 @@ export default function App() {
                       </span>
                     </div>
                   </section>
+                  <QuestCard quests={game.quests} />
+                  <BossCards
+                    bosses={game.bosses}
+                    items={state.items}
+                    settings={effective}
+                    hit={hit}
+                    onEdit={(item) => setEditing(rememberDraft(item))}
+                  />
+                  <WeeklyCard weekly={game.weekly} compact />
                   <section className="sales-card">
                     <span className="eyebrow">{t("salesRecord")}</span>
                     <strong className="sales">
@@ -365,6 +453,8 @@ export default function App() {
                   <h1>{t("achievementsHeading")}</h1>
                   <section className="card achievement-hero">
                     <div className="level-ring">Lv.{game.level}</div>
+                    <strong>{game.title}</strong>
+                    <ListingStreak streak={game.listingStreak} />
                     <h2>
                       {t("untilNext")}
                       {game.need - game.current} XP
@@ -388,9 +478,12 @@ export default function App() {
                       {t("comboUnit")}
                     </p>
                   </section>
+                  <WeeklyCard weekly={game.weekly} />
                   <div className="section-heading">
                     <h2>{t("gear")}</h2>
-                    <span>{game.unlocked.length}/10</span>
+                    <span>
+                      {game.unlocked.length}/{badges.length}
+                    </span>
                   </div>
                   <div className="badge-grid">
                     {badges.map(([key, name, condition]) => (
@@ -411,7 +504,7 @@ export default function App() {
                     <strong className="sales">
                       <AnimatedNumber value={game.sales} settings={effective} format={yen} />
                     </strong>
-                    {[10000, 50000, 100000, 300000, 500000, 1000000].map((n) => (
+                    {gameRules.salesMilestones.map((n) => (
                       <p key={n}>
                         {game.sales >= n ? "✓" : "○"} {yen(n)}
                       </p>

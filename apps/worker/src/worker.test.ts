@@ -1,9 +1,19 @@
 import { readFileSync } from "node:fs";
-import { copyBoosters, type Item } from "@mer/core";
+import {
+  bossConfig,
+  calendar,
+  caps,
+  copyBoosters,
+  dailyQuests,
+  type GameEvent,
+  type Item,
+  XP,
+} from "@mer/core";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { convertV4MiniflareOptions, Miniflare } from "miniflare";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { authenticate, devBypass } from "./auth";
+import { getEvents } from "./data";
 import { jstDay } from "./day";
 import app from "./index";
 import { jpegDimensions } from "./validation";
@@ -1185,5 +1195,267 @@ describe("Gemini listing drafts", () => {
     expect(item.title).toBe("New model");
     expect(item.description).toContain("New model");
     await db.prepare("DELETE FROM events WHERE item_id=?").bind(item.id).run();
+  });
+});
+
+describe("Stage D game events and awards", () => {
+  const noon = Date.parse("2026-10-08T12:00:00+09:00");
+  beforeEach(async () => {
+    // This suite owns a clean game history; existing legacy API scenarios run above.
+    await db.batch(
+      ["events", "operations", "photos", "items", "settings"].map((table) =>
+        db.prepare(`DELETE FROM ${table}`),
+      ),
+    );
+    vi.spyOn(Date, "now").mockReturnValue(noon);
+  });
+  afterEach(() => vi.restoreAllMocks());
+  async function create(status: Item["status"] = "listed", at = noon - 4 * calendar.dayMs) {
+    const itemId = crypto.randomUUID();
+    expect((await request("/items", "POST", { id: itemId, category: "other" })).status).toBe(200);
+    await db
+      .prepare("UPDATE items SET status=?,title='品物',price=1000,listed_at=? WHERE id=?")
+      .bind(status, status === "draft" ? null : at, itemId)
+      .run();
+    return (await state()).items.find((item) => item.id === itemId) as Item;
+  }
+  async function state() {
+    return (await (await request("/state")).json()) as {
+      items: Item[];
+      events: GameEvent[];
+      game: ReturnType<typeof import("@mer/core").gameSummary>;
+    };
+  }
+  function edit(item: Item, price: number, key = crypto.randomUUID()) {
+    return request(
+      `/items/${item.id}`,
+      "PUT",
+      {
+        version: item.version,
+        category: item.category,
+        answers: item.answers,
+        title: item.title,
+        description: item.description,
+        price,
+        shipping: item.shipping,
+        comps: [],
+      },
+      key,
+    );
+  }
+  async function events(type: GameEvent["type"], itemId?: string) {
+    return (await getEvents(db)).filter(
+      (e) => e.type === type && (!itemId || e.item_id === itemId),
+    );
+  }
+  function questDate(id: string) {
+    return Array.from({ length: 6 }, (_, i) => noon + i * calendar.dayMs).find((at) =>
+      dailyQuests([], [], at).some((q) => q.id === id),
+    ) as number;
+  }
+  it.each(["listed", "shelf"] as const)(
+    "records %s price drops once per version, caps XP and resets at JST midnight",
+    async (status) => {
+      vi.mocked(Date.now).mockReturnValue(Date.parse("2026-10-08T23:59:00+09:00"));
+      let item = await create(status);
+      const key = crypto.randomUUID();
+      const first = await edit(item, 900, key);
+      expect(first.status).toBe(200);
+      expect((await edit(item, 900, key)).status).toBe(200);
+      expect((await edit(item, 800)).status).toBe(409);
+      item = (await first.json()) as Item;
+      item = (await (await edit(item, 800)).json()) as Item;
+      let drops = await events("price_drop", item.id);
+      expect(drops).toHaveLength(2);
+      expect(drops.map((e) => e.xp).sort((a, b) => b - a)).toEqual([XP.price_drop, 0]);
+      expect(drops.find((e) => e.xp > 0)).toMatchObject({
+        key: `price_drop:${item.id}:1`,
+        rule_version: 1,
+        meta: { from: 1000, to: 900, boss: true },
+      });
+      vi.mocked(Date.now).mockReturnValue(Date.parse("2026-10-09T00:01:00+09:00"));
+      expect((await edit(item, 700)).status).toBe(200);
+      drops = await events("price_drop", item.id);
+      expect(drops).toHaveLength(3);
+      expect(drops.reduce((sum, e) => sum + e.xp, 0)).toBe(2 * XP.price_drop);
+      expect((await state()).game.unlocked).toContain("priceDrop");
+    },
+  );
+  it("does not record increases, zero prices or edits outside listed/shelf", async () => {
+    for (const status of ["draft", "trading", "to_ship", "done"] as const) {
+      const item = await create(status);
+      expect((await edit(item, 900)).status).toBe(200);
+      expect(await events("price_drop", item.id)).toHaveLength(0);
+    }
+    let item = await create();
+    for (const price of [1000, 1100, 0]) {
+      const response = await edit(item, price);
+      expect(response.status).toBe(200);
+      item = (await response.json()) as Item;
+    }
+    expect(await events("price_drop", item.id)).toHaveLength(0);
+  });
+  it("only commits one competing price edit, and caps XP separately per item", async () => {
+    const item = await create();
+    const results = await Promise.all([edit(item, 900), edit(item, 800)]);
+    expect(results.map((r) => r.status).sort()).toEqual([200, 409]);
+    expect(await events("price_drop", item.id)).toHaveLength(1);
+    const other = await create();
+    await edit(other, 900);
+    expect((await events("price_drop")).reduce((sum, e) => sum + e.xp, 0)).toBe(2 * XP.price_drop);
+  });
+  it.each(["listed", "shelf"] as const)(
+    "records photo plus capped retake on %s, and retry/delete/re-upload never replay XP",
+    async (status) => {
+      const item = await create(status),
+        photoId = crypto.randomUUID();
+      const upload = () => request(`/items/${item.id}/photos/${photoId}`, "POST", image);
+      expect((await upload()).status).toBe(200);
+      expect((await upload()).status).toBe(200);
+      await request(`/items/${item.id}/photos/${photoId}`, "DELETE");
+      expect((await upload()).status).toBe(200);
+      expect(await events("photo", item.id)).toHaveLength(1);
+      expect(await events("retake", item.id)).toHaveLength(1);
+      const results = await Promise.all(
+        Array.from({ length: 3 }, () =>
+          request(`/items/${item.id}/photos/${crypto.randomUUID()}`, "POST", image),
+        ),
+      );
+      expect(results.every((r) => r.status === 200)).toBe(true);
+      expect(await events("photo", item.id)).toHaveLength(4);
+      const retakes = await events("retake", item.id);
+      expect(retakes).toHaveLength(4);
+      expect(retakes.reduce((sum, e) => sum + e.xp, 0)).toBe(caps.retakePerItemDay * XP.retake);
+      expect(retakes.find((e) => e.key === `retake:${photoId}`)).toMatchObject({
+        xp: XP.retake,
+        rule_version: 1,
+        meta: { boss: true },
+      });
+      expect((await state()).game.unlocked).toContain("retake2");
+      vi.mocked(Date.now).mockReturnValue(Date.parse("2026-10-09T00:01:00+09:00"));
+      expect(
+        (await request(`/items/${item.id}/photos/${crypto.randomUUID()}`, "POST", image)).status,
+      ).toBe(200);
+      expect((await events("retake", item.id)).reduce((sum, e) => sum + e.xp, 0)).toBe(
+        2 * XP.retake,
+      );
+    },
+  );
+  it("classifies retakes at upload time and never on draft or sold items", async () => {
+    for (const status of ["draft", "trading", "to_ship", "done"] as const) {
+      const item = await create(status),
+        photoId = crypto.randomUUID();
+      expect((await request(`/items/${item.id}/photos/${photoId}`, "POST", image)).status).toBe(
+        200,
+      );
+      expect(await events("retake", item.id)).toHaveLength(0);
+      expect(await events("photo", item.id)).toHaveLength(1);
+      await db.prepare("UPDATE items SET status='listed' WHERE id=?").bind(item.id).run();
+      // Retrying a draft photo after listing does not turn it into a retake.
+      await request(`/items/${item.id}/photos/${photoId}`, "POST", image);
+      expect(await events("retake", item.id)).toHaveLength(0);
+      await request(`/items/${item.id}/photos/${crypto.randomUUID()}`, "POST", image);
+      expect(await events("retake", item.id)).toHaveLength(1);
+    }
+  });
+  it("awards each completed quest exactly once despite concurrent awards, retries and state reads", async () => {
+    const at = questDate("photo");
+    vi.mocked(Date.now).mockReturnValue(at);
+    const item = await create("draft");
+    const photos = Array.from({ length: 4 }, () => crypto.randomUUID());
+    const results = await Promise.all(
+      photos.map((id) => request(`/items/${item.id}/photos/${id}`, "POST", image)),
+    );
+    expect(results.every((r) => r.status === 200)).toBe(true);
+    await request(`/items/${item.id}/photos/${photos[0]}`, "POST", image);
+    await edit(item, 1000);
+    await state();
+    const rewards = (await events("quest")).filter((e) => e.key === `quest:${jstDay(at)}:photo`);
+    const quest = dailyQuests([], [], at).find((q) => q.id === "photo");
+    expect(rewards).toHaveLength(1);
+    expect(rewards[0].xp).toBe(quest?.rewardXp);
+    expect((await state()).game.quests.find((q) => q.id === "photo")).toMatchObject({
+      done: true,
+      progress: quest?.target,
+    });
+    vi.mocked(Date.now).mockReturnValue(at + 6 * calendar.dayMs);
+    for (let i = 0; i < 3; i++)
+      await request(`/items/${item.id}/photos/${crypto.randomUUID()}`, "POST", image);
+    expect((await events("quest")).filter((e) => e.meta.quest === "photo")).toHaveLength(2);
+  });
+  it("awards boss XP and its badge on sale once, layers the defeat flag, and preserves XP on undo", async () => {
+    const created = await create(),
+      key = crypto.randomUUID();
+    // Undo back to listed requires a listable item (title, price and a photo).
+    await request(`/items/${created.id}/photos/${crypto.randomUUID()}`, "POST", image);
+    const item = (await state()).items.find((i) => i.id === created.id) as Item;
+    const body = { version: item.version, status: "trading", soldPrice: 900 };
+    const response = await request(`/items/${item.id}/status`, "POST", body, key);
+    expect(response.status).toBe(200);
+    const sale = (await response.json()) as { item: Item; bossDefeated: boolean };
+    expect(sale.bossDefeated).toBe(true);
+    expect((await request(`/items/${item.id}/status`, "POST", body, key)).status).toBe(200);
+    expect(await events("boss", item.id)).toHaveLength(1);
+    expect((await events("boss", item.id))[0]).toMatchObject({
+      key: `boss:${item.id}`,
+      xp: XP.boss,
+      rule_version: 1,
+    });
+    const initial = await state();
+    expect(initial.game.unlocked).toContain("bossSlayer");
+    expect(initial.game.bosses.find((b) => b.itemId === item.id)).toMatchObject({
+      defeated: true,
+      hp: 0,
+    });
+    expect(initial.game.weekly.current.bossesDefeated).toBe(1);
+    const undone = await request(`/items/${item.id}/status`, "POST", {
+      version: sale.item.version,
+      status: "listed",
+      undo: key,
+    });
+    expect(undone.status).toBe(200);
+    const restored = ((await undone.json()) as { item: Item }).item;
+    await request(`/items/${item.id}/status`, "POST", {
+      version: restored.version,
+      status: "trading",
+      soldPrice: 900,
+    });
+    expect(await events("boss", item.id)).toHaveLength(1);
+    expect((await state()).game.xp).toBe(initial.game.xp);
+  });
+  it("does not award boss XP on a young sale or a stale losing transition", async () => {
+    const young = await create("listed", noon - (bossConfig.minimumDays - 1) * calendar.dayMs);
+    await request(`/items/${young.id}/status`, "POST", { version: 0, status: "trading" });
+    expect(await events("boss", young.id)).toHaveLength(0);
+    const item = await create();
+    await edit(item, 900);
+    expect(
+      (await request(`/items/${item.id}/status`, "POST", { version: 0, status: "trading" })).status,
+    ).toBe(409);
+    expect(await events("boss", item.id)).toHaveLength(0);
+  });
+  it("records every relisting for streak/boss age without replaying previously earned listing XP", async () => {
+    let item = await create("shelf");
+    await request(`/items/${item.id}/photos/${crypto.randomUUID()}`, "POST", image);
+    for (let i = 0; i < 2; i++) {
+      vi.mocked(Date.now).mockReturnValue(noon + i * calendar.dayMs);
+      const listed = await request(`/items/${item.id}/status`, "POST", {
+        version: item.version,
+        status: "listed",
+      });
+      expect(listed.status).toBe(200);
+      item = ((await listed.json()) as { item: Item }).item;
+      if (i === 0) {
+        const shelved = await request(`/items/${item.id}/status`, "POST", {
+          version: item.version,
+          status: "shelf",
+        });
+        item = ((await shelved.json()) as { item: Item }).item;
+      }
+    }
+    expect(await events("relisted", item.id)).toHaveLength(2);
+    expect((await events("relisted", item.id)).reduce((sum, e) => sum + e.xp, 0)).toBe(XP.relisted);
+    expect((await state()).game.listingStreak).toMatchObject({ current: 2, listedToday: true });
+    expect((await state()).game.bosses).toHaveLength(0);
   });
 });

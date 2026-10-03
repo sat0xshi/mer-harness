@@ -3,6 +3,7 @@ import type { CelebrationType } from "./celebrate";
 import {
   createBurst,
   desktopFeedback,
+  effectProfile,
   particleCount,
   saleAmount,
   shouldVibrate,
@@ -14,11 +15,14 @@ import { t } from "./i18n/ja";
 const counts: [CelebrationType, number, number][] = [
   ["listed", 240, 288],
   ["sold", 320, 384],
-  ["shipped", 80, 96],
-  ["levelup", 150, 150],
-  ["badge", 150, 150],
-  ["streak", 50, 60],
+  ["shipped", 30, 36],
+  ["levelup", 400, 480],
+  ["badge", 30, 36],
+  ["streak", 30, 36],
   ["combo", 30, 36],
+  ["quest", 30, 36],
+  ["hit", 0, 0],
+  ["bossDefeat", 400, 480],
   ["answer", 0, 0],
   ["photo", 0, 0],
   ["copy", 0, 0],
@@ -170,4 +174,33 @@ describe("desktop parity", () => {
               ).toEqual({ flash, shake: flash && !reducedMotion, sound });
             }
   });
+});
+
+describe("adjacent sale celebration tiers", () => {
+  it.each([t("fxOff"), t("fxSubtle"), t("fxNormal"), t("fxVivid")])(
+    "keeps sale above listing at %s",
+    (fx) => {
+      const listed = effectProfile("listed", fx),
+        sold = effectProfile("sold", fx);
+      expect(sold.durationMs).toBeGreaterThan(listed.durationMs);
+      expect(sold.textScale).toBeGreaterThan(listed.textScale);
+      if (fx === t("fxOff") || fx === t("fxSubtle")) {
+        expect(sold.particles).toBe(0);
+        expect(listed.particles).toBe(0);
+        expect(sold.shakePx).toBe(0);
+        expect(listed.shakePx).toBe(0);
+      } else {
+        expect(sold.particles).toBeGreaterThan(listed.particles);
+        expect(sold.shakePx).toBeGreaterThan(listed.shakePx);
+        expect(sold.flash).toBeGreaterThan(listed.flash);
+        for (const viewport of [
+          { width: 390, height: 844 },
+          { width: 1920, height: 1080 },
+        ])
+          expect(particleCount("sold", fx, false, viewport)).toBeGreaterThan(
+            particleCount("listed", fx, false, viewport),
+          );
+      }
+    },
+  );
 });

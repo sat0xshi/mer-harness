@@ -988,6 +988,76 @@ input[type="radio"] {
   width: 100%;
   height: 100%;
 }
+
+.game-card {
+  margin-block: 16px;
+}
+.game-card h2 {
+  margin-top: 0;
+}
+.quest-row {
+  margin-top: 16px;
+}
+.game-card progress {
+  width: 100%;
+  height: 12px;
+  accent-color: var(--c-xp);
+}
+.listing-streak small {
+  display: block;
+}
+.listing-streak p {
+  margin-block: 4px;
+  font-size: 0.8rem;
+}
+.weekly-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.weekly-grid dd {
+  margin: 4px 0 0;
+}
+.weekly-grid small {
+  display: block;
+}
+.boss-health {
+  position: relative;
+  margin-block: 12px;
+}
+.boss-hit {
+  animation: feedback-shake var(--hit-duration) ease-out;
+}
+.damage-pop {
+  position: absolute;
+  right: 8px;
+  top: -8px;
+  color: var(--c-text);
+  background: var(--c-surface);
+  padding: 4px 8px;
+  animation: damage-pop var(--hit-duration) ease-out both;
+}
+.boss-defeat-label {
+  display: block;
+  color: var(--c-xp);
+}
+@keyframes damage-pop {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-28px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .boss-hit,
+  .damage-pop {
+    animation: none;
+  }
+}
+
 .celebration-region {
   position: fixed;
   top: 16px;
@@ -1030,11 +1100,15 @@ input[type="radio"] {
   width: min(760px, 100%);
   padding: clamp(24px, 6vw, 56px);
   border-radius: 28px;
-  font-size: clamp(2rem, 6vw, 4.5rem);
+  font-size: clamp(
+    calc(2rem * var(--text-scale, 1)),
+    calc(6vw * var(--text-scale, 1)),
+    calc(4.5rem * var(--text-scale, 1))
+  );
   font-weight: 900;
   line-height: 1.3;
   text-wrap: balance;
-  animation: celebration-pop 2800ms both;
+  animation: celebration-pop var(--celebration-duration, 2400ms) both;
 }
 .celebration-region[data-big="true"] .sales {
   display: block;
