@@ -65,7 +65,7 @@ pnpm dev
 
 既存の D1 は `mer-harness-stg`（`7fe02d97-df73-40d0-be54-a34c6c5f0ade`）です。この構成では新しいリソースの作成は不要です。セルフホストでは自分のデータベースとホスト名に変更してください。
 
-ステージングは `AUTH_MODE=google` が既定です。Google OAuth の「ウェブアプリケーション」クライアントを用意し、承認済み JavaScript 生成元に正確なアプリのオリジン（この設定では `https://mer-harness-stg.sat0xshi.com`）を登録します。ステージングの vars に `GOOGLE_CLIENT_ID` を設定してください。ログイン画面は Google Identity Services を使い、Worker が RS256・audience・issuer・有効期限・確認済みメール・`OWNER_EMAIL` の完全一致を検証します。その後、有効期間30日の署名付き HttpOnly / Secure / SameSite=Lax Cookie を発行します。[Google の検証ガイド](https://developers.google.com/identity/gsi/web/guides/verify-google-id-token)も参照してください。
+ステージングは `AUTH_MODE=google` が既定です。Google OAuth の「ウェブアプリケーション」クライアントを用意し、承認済み JavaScript 生成元に正確なアプリのオリジン（この設定では `https://furima-harness-stg.sat0xshi.com`）を登録します。ステージングの vars に `GOOGLE_CLIENT_ID` を設定してください。ログイン画面は Google Identity Services を使い、Worker が RS256・audience・issuer・有効期限・確認済みメール・`OWNER_EMAIL` の完全一致を検証します。その後、有効期間30日の署名付き HttpOnly / Secure / SameSite=Lax Cookie を発行します。[Google の検証ガイド](https://developers.google.com/identity/gsi/web/guides/verify-google-id-token)も参照してください。
 
 秘密は対話形式で設定します。`wrangler.jsonc` の vars には書きません。
 

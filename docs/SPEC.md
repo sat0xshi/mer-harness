@@ -7,7 +7,7 @@
 
 - 名称: **メルハーネス / mer-harness**（表示 "Mer Harness"）。ロゴは「Harness」のみ、メルカリのマーク不使用。README に非公式・無関係を明記。
 - GitHub: `sat0xshi/mer-harness`（public, MIT, README 英日）。秘密はコミットしない。
-- URL: production `mer-harness.sat0xshi.com` / staging `mer-harness-stg.sat0xshi.com` / dev はローカル。**production デプロイは聡の「出して」待ち。**
+- URL: production `furima-harness.sat0xshi.com` / staging `furima-harness-stg.sat0xshi.com` / dev はローカル（2026-10-03 フリマハーネス改名で変更。旧 `mer-harness(-stg).sat0xshi.com` は新ホストへ 301）。**production デプロイは聡の「出して」待ち。**
 - Cloudflare: **Workers Free のみ**。有料機能・上限なし従量課金は使わない。R2 は使わず、MVP の画像は **D1 に縮小JPEG（長辺≦1080px, ~200KB）を保存**＋端末保存（D1 Free は 5GB/上限停止）。必要になったら R2 を上限・削除付きで再検討。
 - 白背景化: **ブラウザ内処理のみ**（Cloudflare Images は使わない）。
 - AI補助: **最初から Workers AI 無料枠**（Gemma 4 Vision）。日次呼び出し上限をアプリ側でも設定、AI 無効でも完走。
@@ -145,8 +145,8 @@ settings     key, value   -- 手数料率, 音量, 振動, 発送元 等
 | 環境 | URL（案） | D1 / R2 | 認証 |
 |---|---|---|---|
 | development | `wrangler dev`（ローカル, Miniflare） | ローカルD1 / ローカルR2 | なし（`DEV_AUTH_BYPASS=1`） |
-| staging | `mer-harness-stg.sat0xshi.com` | `mer-harness-stg` / `mer-harness-stg-images` | Cloudflare Access |
-| production | `mer-harness.sat0xshi.com` | `mer-harness-prod` / `mer-harness-prod-images` | Cloudflare Access |
+| staging | `furima-harness-stg.sat0xshi.com` | `mer-harness-stg` / `mer-harness-stg-images` | Cloudflare Access |
+| production | `furima-harness.sat0xshi.com` | `mer-harness-prod` / `mer-harness-prod-images` | Cloudflare Access |
 
 - デプロイ（後日・要承認）: GitHub Actions — PR で test/lint/型チェック、`main` マージで staging、タグ `v*` で production。`CLOUDFLARE_API_TOKEN` は GitHub Secrets のみ。
 - 画像配信: **同一オリジンの Worker 経由に統一**（Access JWT検証 → R2 binding → Images binding で変換 → 結果をR2に保存して再利用）。R2 公開ドメイン/`r2.dev` は無効。`workers_dev:false`・`preview_urls:false` で Access 迂回経路を閉じる。具体的な wrangler.jsonc 案は ARCH_REVIEW.md §2。

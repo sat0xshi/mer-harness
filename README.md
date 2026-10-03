@@ -65,7 +65,7 @@ Local dev uses `wrangler dev` with a local D1 and bypasses auth through `.dev.va
 
 The existing staging D1 is `mer-harness-stg` (`7fe02d97-df73-40d0-be54-a34c6c5f0ade`). No resource creation is needed for this configuration. Self-hosters must supply their own database and hostname.
 
-Staging defaults to `AUTH_MODE=google`. Create a Google OAuth **Web application** client and register the exact app origin (for this staging configuration, `https://mer-harness-stg.sat0xshi.com`) under Authorized JavaScript origins. Set `GOOGLE_CLIENT_ID` in staging vars. Google Identity Services displays the login button; the Worker verifies RS256, audience, issuer, expiry, verified email, and exact `OWNER_EMAIL`, then sets a signed 30-day HttpOnly/Secure/SameSite=Lax session cookie. See [Google's verification guide](https://developers.google.com/identity/gsi/web/guides/verify-google-id-token).
+Staging defaults to `AUTH_MODE=google`. Create a Google OAuth **Web application** client and register the exact app origin (for this staging configuration, `https://furima-harness-stg.sat0xshi.com`) under Authorized JavaScript origins. Set `GOOGLE_CLIENT_ID` in staging vars. Google Identity Services displays the login button; the Worker verifies RS256, audience, issuer, expiry, verified email, and exact `OWNER_EMAIL`, then sets a signed 30-day HttpOnly/Secure/SameSite=Lax session cookie. See [Google's verification guide](https://developers.google.com/identity/gsi/web/guides/verify-google-id-token).
 
 Set secrets interactively (never add them to `wrangler.jsonc` vars):
 
